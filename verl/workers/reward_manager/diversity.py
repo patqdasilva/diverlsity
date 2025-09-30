@@ -43,7 +43,7 @@ class DiversityRewardManager(AbstractRewardManager):
         self.compute_score = compute_score or default_compute_score
         self.reward_fn_key = reward_fn_key  # Store the key for accessing the data source
 
-    def _call_grouped_by_uid(self, data: DataProto, return_dict=False):
+    def __call__(self, data: DataProto, return_dict=False):
         """Group responses by UID and score together."""
         reward_tensor = torch.zeros_like(data.batch["responses"], dtype=torch.float32)
         reward_extra_info = defaultdict(list)
