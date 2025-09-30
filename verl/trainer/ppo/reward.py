@@ -29,6 +29,8 @@ from verl.utils.reward_score import default_compute_score
 from verl.workers.reward_manager import get_reward_manager_cls
 from verl.workers.reward_manager.abstract import AbstractRewardManager, RawRewardFn
 
+import verl.workers.reward_manager.diversity
+
 
 def _call_with_kwargs(raw_fn, extra_kwargs, *args, **kwargs):
     """Calls `raw_fn` by merging `extra_kwargs` into call-time `kwargs`, with `extra_kwargs` taking precedence.
@@ -118,6 +120,11 @@ def load_reward_manager(
     # registered via `verl.workers.reward_manager.register`
     # By default reward_manager is set to naive (NaiveRewardManager)
     reward_manager_name = config.reward_model.get("reward_manager", "naive")
+    from verl.workers.reward_manager.registry import _REWARD_MANAGER_REGISTRY
+    print(f"Looking for reward manager: '{reward_manager_name}'")
+    print(f"Available reward managers: {list(_REWARD_MANAGER_REGISTRY.keys())}")
+    print(f"Type of reward_manager_name: {type(reward_manager_name)}")
+    
     reward_manager_cls = get_reward_manager_cls(reward_manager_name)
 
     # Try to get a custom reward function based on the configuration
