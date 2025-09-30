@@ -14,7 +14,6 @@ import emoji
 import numpy as np
 import torch
 import torch.nn.functional as F
-from sentence_transformers import SentenceTransformer, util
 
 from evaluation_lib import InputExample, test_instruction_following_strict
 from instructions_util import split_into_sentences
@@ -27,7 +26,7 @@ def get_embedding_model():
     global _embedding_model, _embedding_tokenizer
     
     if _embedding_model is None:
-        
+        from sentence_transformers import SentenceTransformer
         model_name = "Qwen/Qwen3-Embedding-0.6B"
         
         # Load model on the appropriate device
@@ -54,6 +53,7 @@ def compute_emb_similarity(texts: List[str]) -> torch.Tensor:
     Returns:
         Tensor of shape (len(texts), len(texts)) with pairwise embedding similarity
     """
+    from sentence_transformers import util
     model = get_embedding_model()
         
     with torch.no_grad():
