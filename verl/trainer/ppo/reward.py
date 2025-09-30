@@ -178,7 +178,7 @@ def compute_reward(data: DataProto, reward_fn: AbstractRewardManager) -> tuple[t
     return reward_tensor, reward_extra_infos_dict
 
 
-@ray.remote(num_cpus=1)
+@ray.remote(num_cpus=1, num_gpus=0.25)
 def compute_reward_async(data: DataProto, config=None, tokenizer=None, reward_fn=None):
     """
     Load the reward manager and compute the reward for a batch of data.
