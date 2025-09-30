@@ -63,7 +63,7 @@ def compute_emb_similarity(texts: List[str]) -> torch.Tensor:
     return sim_matrix
 
 
-def compute_diversity_scores(sim_matrix: torch.Tensor, threshold: float = 0.7) -> List[int]:
+def compute_diversity_scores(responses: List[str], threshold: float = 0.7) -> List[int]:
     """
     Compute diversity scores from a similarity matrix.
 
@@ -76,6 +76,7 @@ def compute_diversity_scores(sim_matrix: torch.Tensor, threshold: float = 0.7) -
         with similarity less than the threshold.
     """
     # Ensure we're not comparing items with themselves by zeroing the diagonal
+    sim_matrix = compute_emb_similarity(responses)
     sim_matrix_no_diag = sim_matrix.clone()
     sim_matrix_no_diag.fill_diagonal_(1.0)  # Ensure diagonals are not counted as < threshold
     
@@ -358,7 +359,7 @@ def compute_score(solution_str, ground_truth, extra_info, data_source):
         responses = [extract_xml_answer(sol, 'response') for sol in solution_str]
         
         # Compute diversity scores for all responses in this batch
-        diversity_scores = compute_diversity_scores(responses, similarity_threshold=0.7)
+        diversity_scores = compute_diversity_scores(responses)
         
         # Process each item in the batch with its diversity score
         scores = []
