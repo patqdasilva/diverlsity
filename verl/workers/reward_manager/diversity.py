@@ -23,7 +23,7 @@ from verl.workers.reward_manager import register
 from verl.workers.reward_manager.abstract import AbstractRewardManager
 
 
-@register("naive")
+@register("diversity")
 class DiversityRewardManager(AbstractRewardManager):
     """The reward manager."""
 

@@ -17,6 +17,7 @@ from .batch import BatchRewardManager
 from .collabllm import CollabLLMRewardManager
 from .dapo import DAPORewardManager
 from .naive import NaiveRewardManager
+from .diversity import DiversityRewardManager
 from .prime import PrimeRewardManager
 
 # Note(haibin.lin): no need to include all reward managers here in case of complicated dependencies
@@ -25,6 +26,7 @@ __all__ = [
     "CollabLLMRewardManager",
     "DAPORewardManager",
     "NaiveRewardManager",
+    "DiversityRewardManager",
     "PrimeRewardManager",
     "register",
     "get_reward_manager_cls",
