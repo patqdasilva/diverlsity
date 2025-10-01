@@ -30,7 +30,7 @@ from verl.trainer.ppo.reward import get_custom_reward_fn
 from verl.utils.fs import copy_to_local
 
 
-@ray.remote
+@ray.remote(num_gpus=1)
 def process_item(reward_fn, data_source, response_lst, reward_data):
     ground_truth = reward_data["ground_truth"]
     score_lst = [reward_fn(data_source, r, ground_truth) for r in response_lst]

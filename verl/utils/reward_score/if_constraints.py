@@ -29,13 +29,7 @@ def get_embedding_model():
     if _embedding_model is None:
         model_name = "Qwen/Qwen3-Embedding-0.6B"
         
-        # Force CUDA_VISIBLE_DEVICES to expose GPU 0
-        if "CUDA_VISIBLE_DEVICES" not in os.environ or os.environ["CUDA_VISIBLE_DEVICES"] == "":
-            os.environ["CUDA_VISIBLE_DEVICES"] = "0,1,2,3,4"  # All your GPUs
-        
-        # Check again after setting environment variable
         device = "cuda" if torch.cuda.is_available() else "cpu"
-        
         print(f"CUDA_VISIBLE_DEVICES: {os.environ.get('CUDA_VISIBLE_DEVICES', 'not set')}")
         print(f"torch.cuda.is_available(): {torch.cuda.is_available()}")
         print(f"torch.cuda.device_count(): {torch.cuda.device_count() if torch.cuda.is_available() else 0}")
