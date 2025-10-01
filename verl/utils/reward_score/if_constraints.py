@@ -324,7 +324,6 @@ def compute_score_single(solution_str, ground_truth, extra_info, data_source, di
         (extra_info['index'], 'hack-not_fuzzy_pattern', float(not_fuzzy_pattern), extra_info['split']),
         (extra_info['index'], 'hack-not_constraint_in_resp', float(not_constraint_in_resp), extra_info['split']),
         (extra_info['index'], 'hack-no_hacking', float(no_hacking), extra_info['split']),
-        (extra_info['index'], 'diversity-raw_score', float(diversity_score), extra_info['split']),
     ]
     write_data(format_data)
     
