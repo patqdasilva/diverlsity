@@ -270,7 +270,7 @@ def check_constraint_following(response, ground_truth, extra_info):
     for instr, follow_instr in zip(constraints, constraint_eval.follow_instruction_list):
         constraint_data.append((extra_info['index'], f'constr-{instr}', float(follow_instr), extra_info['split']))
     write_data(constraint_data)
-    instr_level_reward = max_length_normalized(constraint_eval.follow_instruction_list, base=2)
+    instr_level_reward = max_length_normalized(constraint_eval.follow_instruction_list, base=1.5)
     return instr_level_reward
 
 
@@ -301,11 +301,11 @@ def compute_score_single(solution_str, ground_truth, extra_info, data_source, di
     resp_long_enough = len(response) > 150
     
     format_reward = sum([
-        0.20 if think_format else 0,
-        0.20 if candidates_format else 0,
-        think_long/5,
-        candidate_long/5,
-        0.20 if resp_format and resp_long_enough else 0,
+        0.10 if think_format else 0,
+        think_long*0.6,
+        0.10 if candidates_format else 0,
+        candidate_long*0.1,
+        0.10 if resp_format and resp_long_enough else 0,
     ])
     
     # Prevent reward hacking
@@ -329,7 +329,7 @@ def compute_score_single(solution_str, ground_truth, extra_info, data_source, di
     
     # Constraint reward
     constraint_reward = check_constraint_following(response, ground_truth, extra_info)
-    final_reward = diversity_score*format_reward*constraint_reward if no_hacking else -1
+    final_reward = diversity_score*(format_reward/10 + constraint_reward) if no_hacking else -1
     
     reward_data = [
         (extra_info['index'], 'train-constraint_reward', float(constraint_reward), extra_info['split']),
