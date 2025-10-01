@@ -57,12 +57,11 @@ class DiversityRewardManager(AbstractRewardManager):
             uid = uids[i]
             uid_groups[uid].append(i)
 
-            print(f"\n=== Grouping Validation ===")
-            print(f"Total UIDs: {len(uid_groups)}")
-            for uid, indices in uid_groups.items():
-                print(f"UID {uid}: {len(indices)} responses")
-                if len(indices) != 8:
-                    print(f"  ⚠️  WARNING: Expected 8 responses!")
+        print(f"\n=== Grouping Validation ===")
+        print(f"Total UIDs: {len(uid_groups)}")
+        for uid, indices in uid_groups.items():
+            if len(indices) != 8:
+                print(f"UID {uid}: {len(indices)} responses  ⚠️  WARNING: Expected 8 responses!")
         
         # Process each UID group
         for uid, indices in uid_groups.items():
