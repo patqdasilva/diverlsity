@@ -270,7 +270,7 @@ def check_constraint_following(response, ground_truth, extra_info):
     for instr, follow_instr in zip(constraints, constraint_eval.follow_instruction_list):
         constraint_data.append((extra_info['index'], f'constr-{instr}', float(follow_instr), extra_info['split']))
     write_data(constraint_data)
-    instr_level_reward = max_length_normalized(constraint_eval.follow_instruction_list, base=1.2)
+    instr_level_reward = max_length_normalized(constraint_eval.follow_instruction_list, base=2)
     return instr_level_reward
 
 
@@ -330,9 +330,8 @@ def compute_score_single(solution_str, ground_truth, extra_info, data_source, di
     
     # Constraint reward
     constraint_reward = check_constraint_following(response, ground_truth, extra_info)
-    shaped_constraint_reward = constraint_reward if no_hacking else -1
-
-    final_reward = diversity_score*format_reward*shaped_constraint_reward
+    final_reward = diversity_score*format_reward*constraint_reward if no_hacking else -1
+    
     reward_data = [
         (extra_info['index'], 'train-constraint_reward', float(constraint_reward), extra_info['split']),
         (extra_info['index'], 'train-diversity_score', float(diversity_score), extra_info['split']),
