@@ -9,6 +9,7 @@ import random
 import re
 from difflib import SequenceMatcher
 from typing import List, Union
+from sentence_transformers import util, SentenceTransformer
 
 import emoji
 import numpy as np
@@ -26,10 +27,6 @@ def get_embedding_model():
     global _embedding_model, _embedding_tokenizer
     
     if _embedding_model is None:
-        import torch
-        import os
-        from sentence_transformers import SentenceTransformer
-        
         model_name = "Qwen/Qwen3-Embedding-0.6B"
         
         # Force CUDA_VISIBLE_DEVICES to expose GPU 0
@@ -78,7 +75,6 @@ def compute_emb_similarity(texts: List[str]) -> torch.Tensor:
     Returns:
         Tensor of shape (len(texts), len(texts)) with pairwise embedding similarity
     """
-    from sentence_transformers import util
     model = get_embedding_model()
     embeddings = model.encode(texts)
     if isinstance(embeddings, np.ndarray):
@@ -95,24 +91,20 @@ def compute_diversity_scores(responses: List[str], threshold: float = 0.7) -> Li
     Compute diversity scores from a similarity matrix.
 
     Args:
-        sim_matrix: A square tensor of shape (N, N) representing pairwise similarity scores.
+        responses:
         threshold: Similarity threshold to consider for diversity (default is 0.7).
 
     Returns:
         List of diversity scores, one per element. Each score is the number of other elements
         with similarity less than the threshold.
     """
-    # Ensure we're not comparing items with themselves by zeroing the diagonal
     sim_matrix = compute_emb_similarity(responses)
-    sim_matrix_no_diag = sim_matrix.clone()
-    sim_matrix_no_diag.fill_diagonal_(1.0)  # Ensure diagonals are not counted as < threshold
     
-    # Compute boolean matrix where similarity is below threshold
-    below_threshold = sim_matrix_no_diag < threshold
-
-    # Count how many values are below threshold for each row (excluding self)
-    n_rollout = sim_matrix.shape[0]
-    diversity_scores = below_threshold.sum(dim=1)/(n_rollout-1).tolist()
+    mask = sim_matrix < threshold
+    mask.fill_diagonal_(False)
+    low_sim_counts = mask.sum(dim=1)
+    N = sim_matrix.shape[0] - 1 if sim_matrix.shape[0] > 1 else 1
+    diversity_scores = (low_sim_counts/N).tolist()
 
     return diversity_scores
 
