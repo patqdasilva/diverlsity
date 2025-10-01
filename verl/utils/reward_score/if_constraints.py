@@ -328,6 +328,8 @@ def compute_score_single(solution_str, ground_truth, extra_info, data_source, di
     write_data(format_data)
     
     # Constraint reward
+    if extra_info['split'] == 'test':
+        diversity_score = 1
     constraint_reward = check_constraint_following(response, ground_truth, extra_info)
     final_reward = diversity_score*(format_reward/10 + constraint_reward) if no_hacking else -1
     
