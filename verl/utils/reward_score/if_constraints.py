@@ -26,19 +26,40 @@ def get_embedding_model():
     global _embedding_model, _embedding_tokenizer
     
     if _embedding_model is None:
+        import torch
         from sentence_transformers import SentenceTransformer
+        import os
+        
         model_name = "Qwen/Qwen3-Embedding-0.6B"
         
-        # Load model on the appropriate device
+        # Explicitly use GPU 0 (or any available GPU)
+        device = "cuda:0" if torch.cuda.is_available() else "cpu"
+        
+        # Set CUDA_VISIBLE_DEVICES if needed
+        if torch.cuda.is_available() and "CUDA_VISIBLE_DEVICES" not in os.environ:
+            os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+        
+        if device.startswith("cuda"):
+            model_kwargs = {
+                "attn_implementation": "flash_attention_2",
+                "torch_dtype": torch.bfloat16
+            }
+        else:
+            print("WARNING: GPU not available for embedding model, using CPU")
+            model_kwargs = {
+                "attn_implementation": "eager",
+                "torch_dtype": torch.float32
+            }
         
         _embedding_model = SentenceTransformer(
             model_name,
-            model_kwargs={"attn_implementation": "flash_attention_2", "device_map": "auto", "torch_dtype": torch.bfloat16},
+            model_kwargs=model_kwargs,
             tokenizer_kwargs={"padding_side": "left"},
-            trust_remote_code=True
+            trust_remote_code=True,
+            device=device
         ).eval()
         
-        print(f"Loaded embedding model {model_name}")
+        print(f"Loaded embedding model {model_name} on {device}")
     
     return _embedding_model
 
