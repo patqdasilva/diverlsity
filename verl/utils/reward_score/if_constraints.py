@@ -27,19 +27,23 @@ def get_embedding_model():
     
     if _embedding_model is None:
         import torch
-        from sentence_transformers import SentenceTransformer
         import os
+        from sentence_transformers import SentenceTransformer
         
         model_name = "Qwen/Qwen3-Embedding-0.6B"
         
-        # Explicitly use GPU 0 (or any available GPU)
-        device = "cuda:0" if torch.cuda.is_available() else "cpu"
+        # Force CUDA_VISIBLE_DEVICES to expose GPU 0
+        if "CUDA_VISIBLE_DEVICES" not in os.environ or os.environ["CUDA_VISIBLE_DEVICES"] == "":
+            os.environ["CUDA_VISIBLE_DEVICES"] = "0,1,2,3"  # All your GPUs
         
-        # Set CUDA_VISIBLE_DEVICES if needed
-        if torch.cuda.is_available() and "CUDA_VISIBLE_DEVICES" not in os.environ:
-            os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+        # Check again after setting environment variable
+        device = "cuda" if torch.cuda.is_available() else "cpu"
         
-        if device.startswith("cuda"):
+        print(f"CUDA_VISIBLE_DEVICES: {os.environ.get('CUDA_VISIBLE_DEVICES', 'not set')}")
+        print(f"torch.cuda.is_available(): {torch.cuda.is_available()}")
+        print(f"torch.cuda.device_count(): {torch.cuda.device_count() if torch.cuda.is_available() else 0}")
+        
+        if device == "cuda":
             model_kwargs = {
                 "attn_implementation": "flash_attention_2",
                 "torch_dtype": torch.bfloat16
@@ -76,10 +80,11 @@ def compute_emb_similarity(texts: List[str]) -> torch.Tensor:
     """
     from sentence_transformers import util
     model = get_embedding_model()
-        
-    with torch.no_grad():
-        embeddings = embeddings = model.encode(texts).cpu()
-        sim_matrix = util.pytorch_cos_sim(embeddings, embeddings)
+    if isinstance(embeddings, np.ndarray):
+        embeddings = torch.from_numpy(embeddings)
+    elif embeddings.is_cuda:
+        embeddings = embeddings.cpu()
+    sim_matrix = util.pytorch_cos_sim(embeddings, embeddings)
     
     return sim_matrix
 
