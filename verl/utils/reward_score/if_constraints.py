@@ -80,6 +80,7 @@ def compute_emb_similarity(texts: List[str]) -> torch.Tensor:
     """
     from sentence_transformers import util
     model = get_embedding_model()
+    embeddings = model.encode(texts)
     if isinstance(embeddings, np.ndarray):
         embeddings = torch.from_numpy(embeddings)
     elif embeddings.is_cuda:
