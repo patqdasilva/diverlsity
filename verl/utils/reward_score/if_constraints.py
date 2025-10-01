@@ -31,7 +31,7 @@ def get_embedding_model():
         
         # Force CUDA_VISIBLE_DEVICES to expose GPU 0
         if "CUDA_VISIBLE_DEVICES" not in os.environ or os.environ["CUDA_VISIBLE_DEVICES"] == "":
-            os.environ["CUDA_VISIBLE_DEVICES"] = "0,1,2,3"  # All your GPUs
+            os.environ["CUDA_VISIBLE_DEVICES"] = "0,1,2,3,4"  # All your GPUs
         
         # Check again after setting environment variable
         device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -178,12 +178,12 @@ def thinking_len_reward(thinking, n_constraints):
     if not thinking:
         return 0
     rough_thinking_tokens = 1.3*len(thinking.split(' '))
-    target = 128
+    target = 256 #* (2 * math.log(n_constraints + 1))
     
     if rough_thinking_tokens < target:
         reward = rough_thinking_tokens / target
     else:
-        penalty = (rough_thinking_tokens - target) / (target * 4)
+        penalty = (rough_thinking_tokens - target) / (target * 8)
         reward = max(0, 1 - penalty)
     return reward
 
@@ -307,11 +307,11 @@ def compute_score_single(solution_str, ground_truth, extra_info, data_source, di
     resp_long_enough = len(response) > 150
     
     format_reward = sum([
-        0.05 if think_format else 0,
-        0.05 if candidates_format else 0,
-        think_long/20,
-        candidate_long/20,
-        0.05 if resp_format and resp_long_enough else 0,
+        0.20 if think_format else 0,
+        0.20 if candidates_format else 0,
+        think_long/5,
+        candidate_long/5,
+        0.20 if resp_format and resp_long_enough else 0,
     ])
     
     # Prevent reward hacking
@@ -338,7 +338,7 @@ def compute_score_single(solution_str, ground_truth, extra_info, data_source, di
     constraint_reward = check_constraint_following(response, ground_truth, extra_info)
     shaped_constraint_reward = constraint_reward if no_hacking else -1
 
-    final_reward = diversity_score*(format_reward + shaped_constraint_reward)
+    final_reward = diversity_score*format_reward*shaped_constraint_reward
     reward_data = [
         (extra_info['index'], 'train-constraint_reward', float(constraint_reward), extra_info['split']),
         (extra_info['index'], 'train-diversity_score', float(diversity_score), extra_info['split']),
@@ -346,13 +346,14 @@ def compute_score_single(solution_str, ground_truth, extra_info, data_source, di
     ]
     write_data(reward_data)
     
-    do_print = random.randint(1, 256) == 1
+    do_print = random.randint(1, 256) == 1 # print avg 4 per step
     if do_print:
         print(f"--------------------------------")
         print(f"final_reward: {final_reward}")
-        print(f"constraint_reward: {constraint_reward} | diversity_score: {diversity_score}")
-        print(f"think_format: {think_format} | candidates_format: {candidates_format} | resp_format: {resp_format}")
-        print(f"min_unique_words: {min_unique_words} | not_fuzzy_pattern: {not_fuzzy_pattern} | no_hacking: {no_hacking}")
+        print(f"constraint_reward: {constraint_reward} | format_reward: {format_reward} | diversity_score: {diversity_score}")
+        print(f"think_format: {think_format} | candidates_format: {candidates_format} | resp_format: {resp_format} | think_long: {think_long} | candidate_long: {candidate_long} | resp_long_enough: {resp_long_enough}")
+        print(f"min_unique_words: {min_unique_words} | not_fuzzy_pattern: {not_fuzzy_pattern} | not_constraint_in_resp: {not_constraint_in_resp} | no_hacking: {no_hacking}")
+        print(f"{ground_truth} | constraint_text: {extra_info['constraints']}")
         print(f"[Solution string]\n{solution_str}")
         print(f"--------------------------------")
     
