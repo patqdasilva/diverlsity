@@ -172,12 +172,12 @@ def thinking_len_reward(thinking, n_constraints):
     if not thinking:
         return 0
     rough_thinking_tokens = 1.3*len(thinking.split(' '))
-    target = 256 #* (2 * math.log(n_constraints + 1))
+    target = 128 #* (2 * math.log(n_constraints + 1))
     
     if rough_thinking_tokens < target:
         reward = rough_thinking_tokens / target
     else:
-        penalty = (rough_thinking_tokens - target) / (target * 8)
+        penalty = (rough_thinking_tokens - target) / (target * 4)
         reward = max(0, 1 - penalty)
     return reward
 
@@ -252,7 +252,7 @@ def max_length_normalized(binary_array, max_length=5, base=2):
     return (current_score - 1) / (max_possible_score - 1)
 
 
-def check_constraint_following(response, ground_truth, extra_info):
+def check_constraint_following(response, ground_truth, extra_info, no_hacking):
     instructs = ground_truth
     constraints = instructs["instruction_id"]
     eval_constraints = instructs['kwargs']
@@ -268,9 +268,10 @@ def check_constraint_following(response, ground_truth, extra_info):
     )
     constraint_data = []
     for instr, follow_instr in zip(constraints, constraint_eval.follow_instruction_list):
-        constraint_data.append((extra_info['index'], f'constr-{instr}', float(follow_instr), extra_info['split']))
+        constraint_data.append((extra_info['index'], f'constr_raw-{instr}', float(follow_instr), extra_info['split']))
+        constraint_data.append((extra_info['index'], f'constr_nrh-{instr}', float(follow_instr and no_hacking), extra_info['split']))
     write_data(constraint_data)
-    instr_level_reward = max_length_normalized(constraint_eval.follow_instruction_list, base=1.5)
+    instr_level_reward = max_length_normalized(constraint_eval.follow_instruction_list, base=1.1)
     return instr_level_reward
 
 
@@ -280,7 +281,6 @@ def compute_score_single(solution_str, ground_truth, extra_info, data_source, di
 
     # Format rewards
     think_format, thoughts = follows_tag_format(solution_str, 'thinking')
-    candidates_format, candidates = follows_tag_format(solution_str, 'candidate')
     resp_format = follows_resp_format(solution_str)
     
     if thoughts:
@@ -291,21 +291,12 @@ def compute_score_single(solution_str, ground_truth, extra_info, data_source, di
     else:
         think_long = 0
     
-    if candidates:
-        candidate_long = np.mean([
-            len(candidate) > 150 for candidate in candidates
-        ])
-    else:
-        candidate_long = 0
-    
     resp_long_enough = len(response) > 150
     
     format_reward = sum([
-        0.10 if think_format else 0,
+        0.20 if think_format else 0,
         think_long*0.6,
-        0.10 if candidates_format else 0,
-        candidate_long*0.1,
-        0.10 if resp_format and resp_long_enough else 0,
+        0.20 if resp_format and resp_long_enough else 0,
     ])
     
     # Prevent reward hacking
@@ -316,10 +307,8 @@ def compute_score_single(solution_str, ground_truth, extra_info, data_source, di
     
     format_data = [
         (extra_info['index'], 'format-think_format', float(think_format), extra_info['split']),
-        (extra_info['index'], 'format-candidates_formats', float(candidates_format), extra_info['split']),
         (extra_info['index'], 'format-resp_format', float(resp_format and resp_long_enough), extra_info['split']),
         (extra_info['index'], 'format-think_long', float(think_long), extra_info['split']),
-        (extra_info['index'], 'format-candidate_long', float(candidate_long), extra_info['split']),
         (extra_info['index'], 'hack-min_unique_words', float(min_unique_words), extra_info['split']),
         (extra_info['index'], 'hack-not_fuzzy_pattern', float(not_fuzzy_pattern), extra_info['split']),
         (extra_info['index'], 'hack-not_constraint_in_resp', float(not_constraint_in_resp), extra_info['split']),
@@ -330,8 +319,8 @@ def compute_score_single(solution_str, ground_truth, extra_info, data_source, di
     # Constraint reward
     if extra_info['split'] == 'test':
         diversity_score = 1
-    constraint_reward = check_constraint_following(response, ground_truth, extra_info)
-    final_reward = diversity_score*(format_reward/10 + constraint_reward) if no_hacking else -1
+    constraint_reward = check_constraint_following(response, ground_truth, extra_info, no_hacking)
+    final_reward = diversity_score*format_reward*constraint_reward if no_hacking else -1
     
     reward_data = [
         (extra_info['index'], 'train-constraint_reward', float(constraint_reward), extra_info['split']),
@@ -345,7 +334,7 @@ def compute_score_single(solution_str, ground_truth, extra_info, data_source, di
         print(f"--------------------------------")
         print(f"final_reward: {final_reward}")
         print(f"constraint_reward: {constraint_reward} | format_reward: {format_reward} | diversity_score: {diversity_score}")
-        print(f"think_format: {think_format} | candidates_format: {candidates_format} | resp_format: {resp_format} | think_long: {think_long} | candidate_long: {candidate_long} | resp_long_enough: {resp_long_enough}")
+        print(f"think_format: {think_format} | think_long: {think_long} | resp_format: {resp_format} | resp_long_enough: {resp_long_enough}")
         print(f"min_unique_words: {min_unique_words} | not_fuzzy_pattern: {not_fuzzy_pattern} | not_constraint_in_resp: {not_constraint_in_resp} | no_hacking: {no_hacking}")
         print(f"{ground_truth} | constraint_text: {extra_info['constraints']}")
         print(f"[Solution string]\n{solution_str}")
