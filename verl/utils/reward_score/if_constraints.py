@@ -324,7 +324,7 @@ def compute_score_single(solution_str, ground_truth, extra_info, data_source, di
         format_multiplier = 0
         think_bonus = 0
     elif constraint_reward == 0:
-        final_reward = -0.4 + 0.4*(format_reward/3) # scale reward to 0 based on formatting [-0.4,1]
+        final_reward = -0.4 + 0.4*(format_reward/3) # scale reward to 0 based on formatting [-0.4,0]
         format_multiplier = 0
         think_bonus = 0
     else:
@@ -374,7 +374,7 @@ def compute_score(solution_str, ground_truth, extra_info, data_source):
         responses = [extract_xml_answer(sol, 'response') for sol in solution_str]
         
         # Compute diversity scores for all responses in this batch
-        diversity_scores = compute_diversity_scores(responses)
+        diversity_scores = compute_diversity_scores(responses, threshold=0.6)
         
         # Process each item in the batch with its diversity score
         scores = []
