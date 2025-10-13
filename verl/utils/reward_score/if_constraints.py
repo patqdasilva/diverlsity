@@ -372,9 +372,10 @@ def compute_score(solution_str, ground_truth, extra_info, data_source):
     if is_batch:
         # Extract responses for diversity computation
         responses = [extract_xml_answer(sol, 'response') for sol in solution_str]
+        thinking = [extract_xml_answer(sol, 'thinking') for sol in solution_str]
         
         # Compute diversity scores for all responses in this batch
-        diversity_scores = compute_diversity_scores(responses, threshold=0.6)
+        diversity_scores = compute_diversity_scores(thinking, threshold=0.8)
         
         # Process each item in the batch with its diversity score
         scores = []
