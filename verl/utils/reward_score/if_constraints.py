@@ -378,8 +378,8 @@ def compute_score(solution_str, ground_truth, extra_info, data_source):
         for sol, gt, ei, ds, div_think, div_resp in zip(solution_str, ground_truth, extra_info, data_source, diversity_think, diversity_resp):
             score = compute_score_single(sol, gt, ei, ds, diversity_score=div_think)
             reward_data = [
-                (extra_info['index'], 'train-diversity_think', float(div_think), extra_info['split']),
-                (extra_info['index'], 'train-diversity_resp', float(div_resp), extra_info['split']),
+                (ei['index'], 'train-diversity_think', float(div_think), ei['split']),
+                (ei['index'], 'train-diversity_resp', float(div_resp), ei['split']),
             ]
             write_data(reward_data)
             scores.append(score)
