@@ -172,8 +172,8 @@ def thinking_len_reward(thinking, n_constraints):
     if not thinking:
         return 0
     rough_thinking_tokens = 1.3*len(thinking.split(' '))
-    # target = 128 * (1.2 * math.log(n_constraints + 1)) # scaled to number of constraints
-    target = 512
+    target = 256 * (1.5 * math.log(n_constraints + 1)) # scaled to number of constraints
+    # target = 512
     
     if rough_thinking_tokens < target:
         reward = rough_thinking_tokens / target
@@ -186,7 +186,7 @@ def thinking_len_reward(thinking, n_constraints):
 def constraint_in_response(resp, constraints, constraint_types):
     if not constraints:
         return False
-    copy_keywords = ['copy', 'repeat', 'reverse']
+    copy_keywords = ['copy', 'repeat', 'reverse', 'constrained_response']
     if any(keyword in constraint.lower() for constraint in constraint_types for keyword in copy_keywords):
         return False
     resp_words = set(re.findall(r'\b\w+\b', resp.lower()))
@@ -196,7 +196,7 @@ def constraint_in_response(resp, constraints, constraint_types):
             if len(word) >= 1
         ]
         pr_overlap = sum([1 for cw in constraint_words if cw in resp_words])
-        if (pr_overlap / len(constraint_words)) >= 0.8:
+        if (pr_overlap / len(constraint_words)) >= 0.7:
             return True
     return False
 
@@ -228,13 +228,13 @@ def is_fuzzy_pattern(text: str, constraint_types: List[str], threshold: float=0.
                 return True
         return False
     
-    if len(text) < 3:
-        return True
+    # if len(text) < 3:
+    #     return True
     
     if re.search(r'```|def\s+\w+\s*\(|class\s+\w+\s*[\(:]|function\s+\w+\s*\(|for\s+\w+\s+in\s+|if\s+.*:|import\s+\w+|from\s+\w+\s+import|\w+\s*=\s*\w+\s*\(|console\.log\(|print\s*\(', text):
         return False
     
-    copy_keywords = ['copy', 'repeat', 'reverse']
+    copy_keywords = ['copy', 'repeat', 'reverse', 'constrained_response']
     if any(keyword in constraint.lower() for constraint in constraint_types for keyword in copy_keywords):
         return False
     
@@ -295,7 +295,7 @@ def compute_score_single(solution_str, ground_truth, extra_info, data_source, di
     
     # Prevent reward hacking
     min_unique_words = len(set(response.split(' '))) > 5
-    not_fuzzy_pattern = not is_fuzzy_pattern(response, ground_truth["instruction_id"], threshold=0.6)
+    not_fuzzy_pattern = not is_fuzzy_pattern(response, ground_truth["instruction_id"], threshold=0.7)
     not_constraint_in_resp = not constraint_in_response(response, extra_info['constraints'], ground_truth["instruction_id"])
     no_hacking = min_unique_words and not_fuzzy_pattern and not_constraint_in_resp
     
@@ -330,7 +330,6 @@ def compute_score_single(solution_str, ground_truth, extra_info, data_source, di
     reward_data = [
         (extra_info['index'], 'train-format_multiplier', float(format_multiplier), extra_info['split']),
         (extra_info['index'], 'train-think_bonus', float(think_bonus), extra_info['split']),
-        (extra_info['index'], 'train-diversity_score', float(diversity_score), extra_info['split']),
         (extra_info['index'], 'train-constraint_reward', float(constraint_reward), extra_info['split']),
         (extra_info['index'], 'train-constraint_reward-nh', float(constraint_reward if no_hacking else 0), extra_info['split']),
         (extra_info['index'], 'train-final_reward', float(final_reward), extra_info['split']),
@@ -372,6 +371,13 @@ def compute_score(solution_str, ground_truth, extra_info, data_source):
         
         # Compute diversity scores for all responses in this batch
         diversity_scores = compute_diversity_scores(thinking, threshold=0.7)
+        diversity_resp = compute_diversity_scores(responses, threshold=0.7)
+        for dt, dr in zip(diversity_scores, diversity_resp):
+            reward_data = [
+                (extra_info['index'], 'train-diversity_think', float(dt), extra_info['split']),
+                (extra_info['index'], 'train-diversity_resp', float(dr), extra_info['split']),
+            ]
+            write_data(reward_data)
         
         # Process each item in the batch with its diversity score
         scores = []
