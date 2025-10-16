@@ -172,7 +172,8 @@ def thinking_len_reward(thinking, n_constraints):
     if not thinking:
         return 0
     rough_thinking_tokens = 1.3*len(thinking.split(' '))
-    target = 128 * (1.2 * math.log(n_constraints + 1))
+    # target = 128 * (1.2 * math.log(n_constraints + 1)) # scaled to number of constraints
+    target = 512
     
     if rough_thinking_tokens < target:
         reward = rough_thinking_tokens / target
@@ -218,8 +219,8 @@ def is_fuzzy_pattern(text: str, constraint_types: List[str], threshold: float=0.
             is_emoji_list = [emoji.is_emoji(t) for t in items[0]]
             return any(is_emoji_list[i] and is_emoji_list[i+1] and is_emoji_list[i+2] for i in range(len(is_emoji_list)-2))
         for i in range(len(items) - 1):
-            if len(items[i]) == 1 and len(items[i + 1]) == 1:
-                return True
+            # if len(items[i]) == 1 and len(items[i + 1]) == 1:
+            #     return True
             if '\\' in items[i] or '\\' in items[i + 1]:
                 return False
             seq_ratio = SequenceMatcher(None, items[i], items[i + 1]).ratio()
@@ -268,7 +269,7 @@ def check_constraint_following(response, ground_truth, extra_info, no_hacking):
     )
     constraint_data = []
     for instr, follow_instr in zip(constraints, constraint_eval.follow_instruction_list):
-        constraint_data.append((extra_info['index'], f'constr_raw-{instr}', float(follow_instr), extra_info['split']))
+        # constraint_data.append((extra_info['index'], f'constr_raw-{instr}', float(follow_instr), extra_info['split']))
         constraint_data.append((extra_info['index'], f'constr_nrh-{instr}', float(follow_instr and no_hacking), extra_info['split']))
     write_data(constraint_data)
     instr_level_reward = max_length_normalized(constraint_eval.follow_instruction_list, base=1.5)
@@ -290,14 +291,11 @@ def compute_score_single(solution_str, ground_truth, extra_info, data_source, di
         ])
     else:
         think_long = 0
-    resp_long_enough = len(response) > 150
-    # Make sure the model model responds with a believable number of tokens
-    resp_long_enough = len(response) > 150
-    format_reward = sum([think_format, resp_format, resp_long_enough])
+    format_reward = sum([think_format, resp_format])
     
     # Prevent reward hacking
-    min_unique_words = len(set(response.split(' '))) > 10
-    not_fuzzy_pattern = not is_fuzzy_pattern(response, ground_truth["instruction_id"], threshold=0.5)
+    min_unique_words = len(set(response.split(' '))) > 5
+    not_fuzzy_pattern = not is_fuzzy_pattern(response, ground_truth["instruction_id"], threshold=0.6)
     not_constraint_in_resp = not constraint_in_response(response, extra_info['constraints'], ground_truth["instruction_id"])
     no_hacking = min_unique_words and not_fuzzy_pattern and not_constraint_in_resp
     
@@ -305,7 +303,6 @@ def compute_score_single(solution_str, ground_truth, extra_info, data_source, di
         (extra_info['index'], 'format-think_format', float(think_format), extra_info['split']),
         (extra_info['index'], 'format-think_long', float(think_long), extra_info['split']),
         (extra_info['index'], 'format-resp_format', float(resp_format), extra_info['split']),
-        (extra_info['index'], 'format-resp_long', float(resp_long_enough), extra_info['split']),
         (extra_info['index'], 'hack-min_unique_words', float(min_unique_words), extra_info['split']),
         (extra_info['index'], 'hack-not_fuzzy_pattern', float(not_fuzzy_pattern), extra_info['split']),
         (extra_info['index'], 'hack-not_constraint_in_resp', float(not_constraint_in_resp), extra_info['split']),
@@ -317,19 +314,18 @@ def compute_score_single(solution_str, ground_truth, extra_info, data_source, di
     if extra_info['split'] == 'test':
         diversity_score = 1
     constraint_reward = check_constraint_following(response, ground_truth, extra_info, no_hacking)
-    final_reward = diversity_score*format_reward*constraint_reward if no_hacking else -1
     # Calculate final reward
     if not no_hacking:
         final_reward = -0.5 # discourage hacking
         format_multiplier = 0
         think_bonus = 0
     elif constraint_reward == 0:
-        final_reward = -0.4 + 0.4*(format_reward/3) # scale reward to 0 based on formatting [-0.4,0]
+        final_reward = -0.4 + 0.4*(format_reward/2) # scale reward to 0 based on formatting [-0.4,0]
         format_multiplier = 0
         think_bonus = 0
     else:
-        format_multiplier = 0.6 + 0.4*(format_reward/3) # scale reward based on formatting [0.6,1]
-        think_bonus = 0.6 + 0.4*think_long # Scale [0.6-1] for better gradient/lesser impact
+        format_multiplier = 0.7 + 0.3*(format_reward/2) # scale reward based on formatting [0.7,1]
+        think_bonus = 0.7 + 0.3*think_long # Scale [0.7,1] for better gradient/lesser impact
         final_reward = constraint_reward*format_multiplier*think_bonus*diversity_score
     reward_data = [
         (extra_info['index'], 'train-format_multiplier', float(format_multiplier), extra_info['split']),
@@ -341,12 +337,12 @@ def compute_score_single(solution_str, ground_truth, extra_info, data_source, di
     ]
     write_data(reward_data)
     
-    do_print = random.randint(1, 256) == 1 # print avg 4 per step
+    do_print = random.randint(1, 128) == 1 # print avg 4 per step
     if do_print:        
         print(f"--------------------------------")
         print(f"final_reward: {final_reward}")
         print(f"constraint_reward: {constraint_reward} | format_reward: {format_reward} | format_multiplier: {format_multiplier} | think_bonus: {think_bonus} | diversity_score: {diversity_score}")
-        print(f"think_format: {think_format} | think_long: {think_long} | resp_format: {resp_format} | resp_long_enough: {resp_long_enough}")
+        print(f"think_format: {think_format} | think_long: {think_long} | resp_format: {resp_format}")
         print(f"min_unique_words: {min_unique_words} | not_fuzzy_pattern: {not_fuzzy_pattern} | not_constraint_in_resp: {not_constraint_in_resp} | no_hacking: {no_hacking}")
         print(f"{ground_truth} | constraint_text: {extra_info['constraints']}")
         print(f"[Solution string]\n{solution_str}")
@@ -375,7 +371,7 @@ def compute_score(solution_str, ground_truth, extra_info, data_source):
         thinking = [extract_xml_answer(sol, 'thinking') for sol in solution_str]
         
         # Compute diversity scores for all responses in this batch
-        diversity_scores = compute_diversity_scores(thinking, threshold=0.8)
+        diversity_scores = compute_diversity_scores(thinking, threshold=0.7)
         
         # Process each item in the batch with its diversity score
         scores = []
