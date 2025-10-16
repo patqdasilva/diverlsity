@@ -370,19 +370,18 @@ def compute_score(solution_str, ground_truth, extra_info, data_source):
         thinking = [extract_xml_answer(sol, 'thinking') for sol in solution_str]
         
         # Compute diversity scores for all responses in this batch
-        diversity_scores = compute_diversity_scores(thinking, threshold=0.7)
+        diversity_think = compute_diversity_scores(thinking, threshold=0.7)
         diversity_resp = compute_diversity_scores(responses, threshold=0.7)
-        for dt, dr in zip(diversity_scores, diversity_resp):
-            reward_data = [
-                (extra_info['index'], 'train-diversity_think', float(dt), extra_info['split']),
-                (extra_info['index'], 'train-diversity_resp', float(dr), extra_info['split']),
-            ]
-            write_data(reward_data)
-        
+
         # Process each item in the batch with its diversity score
         scores = []
-        for sol, gt, ei, ds, div_score in zip(solution_str, ground_truth, extra_info, data_source, diversity_scores):
-            score = compute_score_single(sol, gt, ei, ds, diversity_score=div_score)
+        for sol, gt, ei, ds, div_think, div_resp in zip(solution_str, ground_truth, extra_info, data_source, diversity_think, diversity_resp):
+            score = compute_score_single(sol, gt, ei, ds, diversity_score=div_think)
+            reward_data = [
+                (extra_info['index'], 'train-diversity_think', float(div_think), extra_info['split']),
+                (extra_info['index'], 'train-diversity_resp', float(div_resp), extra_info['split']),
+            ]
+            write_data(reward_data)
             scores.append(score)
         return scores
     else:
