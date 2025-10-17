@@ -592,7 +592,7 @@ def compute_diversity_scores(responses: List[str], threshold: float = 0.8) -> Li
     return diversity_scores
 
 
-def write_data(data, filename='/fs/scratch/PAS2836/pqd/rewards.csv'):
+def write_data(data, filename='/models/rewards.csv'):
     """
     Creates file with header if it doesn't exist, otherwise appends.
     
@@ -609,7 +609,7 @@ def write_data(data, filename='/fs/scratch/PAS2836/pqd/rewards.csv'):
         
         writer.writerows(data)
 
-def write_data_jsonl(data, filename='/fs/scratch/PAS2836/pqd/rewards_mt.jsonl'):
+def write_data_jsonl(data, filename='/models/rewards_mt.jsonl'):
     """
     Appends Python dict(s) to a JSONL file, creating the file if it doesn't exist.
     
