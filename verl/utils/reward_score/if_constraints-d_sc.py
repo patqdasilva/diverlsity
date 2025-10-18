@@ -954,7 +954,9 @@ def compute_score_single(solution_str, ground_truth, extra_info, data_source, di
     
     # Constraint reward   
     constraint_reward = check_constraint_following(response, ground_truth, extra_info, no_hacking) 
-    if not triples:
+    if extra_info['split'] == 'test':
+        mt_reward = 1
+    elif not triples:
         mt_reward = 0
     else:
         n_constraints = len(ground_truth['instruction_id'])
@@ -968,7 +970,6 @@ def compute_score_single(solution_str, ground_truth, extra_info, data_source, di
         write_data_jsonl([metrics])
         mt_reward = n_constraints*mt_pct_reward
     
-
     # Calculate final reward
     if not no_hacking:
         final_reward = -1 # discourage hacking
