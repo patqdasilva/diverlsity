@@ -796,8 +796,8 @@ def thinking_microsections(thinking):
     verifications = re.findall(verify_pattern, thinking, re.DOTALL)
     
     # Combine into triples (assuming the correct order)
-    format_reward = sum([len(drafts) > 0, len(analyses) > 0, len(verifications) > 0])/3
-    min_len = max(len(drafts), len(verifications))
+    format_reward = sum([len(drafts) > 0, len(analyses) > 0, len(verifications) > 0])
+    min_len = min(len(drafts), len(verifications))
     
     for i in range(min_len):
         triple = (
