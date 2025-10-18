@@ -633,42 +633,123 @@ def follows_resp_format(text) -> bool:
     return bool(matches)
 
 
-def follows_tag_format(text: str, tag: str) -> bool:
+def has_single_bracket_tag(content: str) -> bool:
+    """
+    Check if content has single-bracket tags like <word> or </word>
+    Returns True if invalid tags found, False if content is valid
+    
+    Allows:
+    - <<word>> (double brackets)
+    - < and > in expressions like x < 5
+    - <<<word>>> (triple+ brackets)
+    
+    Rejects:
+    - <word> (single bracket tag)
+    - </word> (single bracket closing tag)
+    """
+    i = 0
+    while i < len(content):
+        if content[i] == '<':
+            # Check if it's a double (or more) bracket
+            if i + 1 < len(content) and content[i + 1] == '<':
+                i += 2
+                continue
+            
+            # Check if preceded by < (for patterns like >><)
+            if i > 0 and content[i - 1] == '<':
+                i += 1
+                continue
+            
+            # Now we have a single <, check if it's a tag
+            # Look ahead to see if it matches tag pattern: <word> or </word>
+            j = i + 1
+            
+            # Skip optional /
+            is_closing = False
+            if j < len(content) and content[j] == '/':
+                is_closing = True
+                j += 1
+            
+            # Collect word characters
+            word_start = j
+            while j < len(content) and (content[j].isalnum() or content[j] in '_-:.'):
+                j += 1
+            
+            # Check if we found a word followed by >
+            if j > word_start and j < len(content) and content[j] == '>':
+                # Check it's not followed by another > (which would make it double bracket)
+                if j + 1 >= len(content) or content[j + 1] != '>':
+                    # This is a single-bracket tag like <word> or </word>
+                    return True
+            
+            i += 1
+        else:
+            i += 1
+    
+    return False
+
+def follows_tag_format(text: str, tag: str) -> tuple[bool, list[str]]:
     """
     Generalized reward function that penalizes format violations for any tag
     Returns: (is_valid, list_of_tag_contents)
+    
+    Allows double angle brackets like <<draft>> but rejects single bracket tags like <draft>
     """
     
-    opening_pattern = f"<{re.escape(tag)}>"
-    closing_pattern = f"</{re.escape(tag)}>"
+    opening_tag = f"<{tag}>"
+    closing_tag = f"</{tag}>"
     
-    opening_count = len(re.findall(opening_pattern, text))
-    closing_count = len(re.findall(closing_pattern, text))
+    # Count opening and closing tags
+    opening_count = text.count(opening_tag)
+    closing_count = text.count(closing_tag)
     
     if opening_count != closing_count or opening_count == 0:
         return False, []
     
-    if text.count("<") != text.count(">"):
+    # Check for newline after opening tag
+    opening_with_newline = f"<{tag}>\n"
+    if text.count(opening_with_newline) != opening_count:
         return False, []
     
-    opening_with_newline_pattern = f"<{re.escape(tag)}>\\n"
-    if len(re.findall(opening_with_newline_pattern, text)) != opening_count:
+    # Check for newline before closing tag
+    closing_with_newline = f"\n</{tag}>"
+    if text.count(closing_with_newline) != closing_count:
         return False, []
     
-    closing_with_newline_pattern = f"\\n</{re.escape(tag)}>"
-    if len(re.findall(closing_with_newline_pattern, text)) != closing_count:
+    # Extract tag contents and check for invalid single-bracket tags
+    tag_contents = []
+    pos = 0
+    
+    for _ in range(opening_count):
+        # Find next opening tag
+        open_pos = text.find(opening_with_newline, pos)
+        if open_pos == -1:
+            return False, []
+        
+        # Find corresponding closing tag
+        close_pos = text.find(closing_with_newline, open_pos)
+        if close_pos == -1:
+            return False, []
+        
+        # Extract content between tags
+        content_start = open_pos + len(opening_with_newline)
+        content = text[content_start:close_pos]
+        
+        # Check for single-bracket tags (but allow double brackets)
+        # Pattern: < followed by letter/slash, but NOT preceded/followed by another </>
+        # This allows <<text>>, <<<text>>>, comparison operators, but rejects <word>
+        if has_single_bracket_tag(content):
+            return False, []
+        
+        tag_contents.append(content.strip())
+        
+        # Move position past this closing tag
+        pos = close_pos + len(closing_with_newline)
+    
+    # Check if there's a stray closing tag at the end
+    remaining_text = text[pos:].strip()
+    if remaining_text == closing_tag:
         return False, []
-    
-    stray_closing_pattern = f"</{re.escape(tag)}>\\s*$"
-    complete_section_pattern = f"<{re.escape(tag)}>.*</{re.escape(tag)}>\\s*$"
-    
-    if re.search(stray_closing_pattern, text) and not re.search(complete_section_pattern, text, re.DOTALL):
-        return False, []
-    
-    content_pattern = f"<{re.escape(tag)}>(.*?)</{re.escape(tag)}>"
-    tag_contents = re.findall(content_pattern, text, re.DOTALL)
-    
-    tag_contents = [content.strip() for content in tag_contents]
     
     return True, tag_contents
 
@@ -705,11 +786,29 @@ def constraint_in_response(resp, constraints, constraint_types):
             return True
     return False
 
-
-def extract_xml_answer(text: str, tag: str) -> str:
-    """Helper function to extract answers from XML format"""
+def extract_xml_answer(text: str, tag: str, remove_tags: list = None) -> str:
+    """
+    Helper function to extract answers from XML format with optional section removal.
+    
+    Args:
+        text: The input text containing XML tags
+        tag: The main tag to extract content from
+        remove_tags: Optional list of tag names to remove from the extracted content
+        
+    Returns:
+        Extracted and cleaned text content
+    """
+    # Extract content from the main tag
     answer = text.split(f"<{tag}>")[-1]
     answer = answer.split(f"</{tag}>")[0]
+    
+    # Remove specified tags if provided
+    if remove_tags:
+        for remove_tag in remove_tags:
+            # Pattern to match both single and double angle brackets
+            pattern = f'<<?{remove_tag}>>.*?<</<?{remove_tag}>>'
+            answer = re.sub(pattern, '', answer, flags=re.DOTALL)
+    
     return answer.strip()
 
 
@@ -833,17 +932,23 @@ def compute_verification_score(auto, judge):
     """
     Reward accurate self-assessment.
     Penalize overconfidence on errors more than underconfidence on correct answers.
+
+    Calibrating Expectations for always using one strategy:
+    - Never evaluate: 0.25
+    - Always true: 0.5
+    - Always false: 0.6
+    - Always unsure: 0.7
     """
     if judge == 'nm':
-        return 0.3  # Small default for parse failures
+        return 0.25  # Small default for parse failures
     elif judge == 'unsure':
-        return 0.4  # Slight penalty vs confident correct
+        return 0.7  # Slight penalty vs confident correct
     elif auto and judge == 'true':
         return 1.0  # Correct and knows it
     elif not auto and judge == 'false':
         return 1.0  # Incorrect and knows it
     elif auto and judge == 'false':
-        return 0.7  # Correct but cautious (not too bad!)
+        return 0.2  # Correct but cautious
     else:  # auto == 0 and judge == 'true'
         return 0.0  # Hallucinating correctness (worst)
 
@@ -858,9 +963,6 @@ def agg_scores_per_constraint(scores_by_attempt):
     all_jc_deltas = []  # last - first
     
     for constraint_id in constraint_ids:
-        remaining = 1
-        constraint_reward = 0
-        
         # Collect trajectory for this constraint
         cc_trajectory = []
         jc_trajectory = []
@@ -869,11 +971,22 @@ def agg_scores_per_constraint(scores_by_attempt):
             cc, jc = attempt[constraint_id]
             cc_trajectory.append(cc)
             jc_trajectory.append(jc)
-            
-            term = remaining * cc * jc
-            constraint_reward += term
-            remaining *= (1 - cc * jc)
         
+        # Check if ever correct
+        ever_correct = any(cc == 1 for cc in cc_trajectory)
+        
+        if ever_correct:
+            # Full point for eventual correctness
+            correctness_reward = 0.6
+        else:
+            # No points for never being correct
+            correctness_reward = 0.0
+        
+        # Separate verification reward: average of jc scores
+        # This incentivizes accurate self-assessment throughout
+        verification_reward = np.mean(jc_trajectory) * 0.4  # scale factor
+        
+        constraint_reward = correctness_reward + verification_reward
         total_reward += constraint_reward
         
         # Store trajectory data
@@ -933,7 +1046,16 @@ def compute_score_single(solution_str, ground_truth, extra_info, data_source, di
     think_format, thoughts = follows_tag_format(solution_str, 'thinking')
     resp_format, responses = follows_tag_format(solution_str, 'response')
     triples, mt_format = thinking_microsections(thinking)
-    format_reward = np.mean([think_format, resp_format, mt_format])
+    verify_format = []
+    if triples:
+        for triple in triples:
+            lines = triple[2].split('\n')
+            candidates = ground_truth['instruction_id']
+            verify_format.append(0 if len(lines) > len(candidates) else 1)
+        verify_format = np.mean(verify_format)
+    else:
+        verify_format = 0
+    format_reward = sum([think_format, resp_format, mt_format, verify_format])/6
     
     # Prevent reward hacking
     min_unique_words = len(set(response.split(' '))) > 5
@@ -1020,7 +1142,7 @@ def compute_score(solution_str, ground_truth, extra_info, data_source):
     if is_batch:
         # Extract responses for diversity computation
         responses = [extract_xml_answer(sol, 'response') for sol in solution_str]
-        thinking = [extract_xml_answer(sol, 'thinking') for sol in solution_str]
+        thinking = [extract_xml_answer(sol, 'thinking', remove_tags=['verify']) for sol in solution_str]
         
         # Compute diversity scores for all responses in this batch
         diversity_think = compute_diversity_scores(thinking, threshold=0.7)
