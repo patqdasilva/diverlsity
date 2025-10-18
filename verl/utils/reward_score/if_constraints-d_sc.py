@@ -403,7 +403,7 @@ class ConstraintMatcher:
         # Use 1 - similarity as cost
         cost_matrix = 1.0 - similarity_matrix
 
-        print(similarity_matrix)
+        # print(similarity_matrix)
         
         return cost_matrix, similarity_matrix
     
@@ -462,7 +462,7 @@ class ConstraintMatcher:
                 similarity = similarity_matrix[line_idx, candidate_idx]
                 # Only accept match if similarity is above threshold
                 if similarity > 0.1:  # Minimum threshold for valid match
-                    print(line_idx, candidate_idx)
+                    # print(line_idx, candidate_idx)
                     # Check if line contains 'true' or positive indicators
                     if re.search(r'\btrue\b', line, re.IGNORECASE):
                         result[candidate] = 'true'
@@ -913,15 +913,15 @@ def agg_scores_per_constraint(scores_by_attempt):
 def draft_verification_match(draft, verify, ground_truth, no_hacking):
     """Scores a single draft, verify pair"""
     auto_scores = check_constraint_accuracy(draft, ground_truth, no_hacking) # score draft, will be dict with constraint labels
-    print('auto_scores', auto_scores)
+    # print('auto_scores', auto_scores)
     verify_scores = extract_verify_logic(verify, ground_truth['instruction_id'])
-    print('verify_scores', verify_scores)
+    # print('verify_scores', verify_scores)
     cc_jc = {}
     for constraint in ground_truth['instruction_id']:
         auto = auto_scores[constraint]
         judge = verify_scores.get(constraint, 'nm')
         cc_jc[constraint] = (int(auto), compute_verification_score(auto, judge))
-    print('cc_jc', cc_jc)
+    # print('cc_jc', cc_jc)
     return cc_jc
 
 def compute_score_single(solution_str, ground_truth, extra_info, data_source, diversity_score=0.0):
