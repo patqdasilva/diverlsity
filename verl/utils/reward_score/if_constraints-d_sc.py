@@ -1057,10 +1057,11 @@ def agg_scores_per_constraint(scores_by_attempt):
     verification_categories = {
         'no_mention': 0,
         'unsure': 0,
-        'true_true': 0,
-        'false_false': 0,
-        'true_false': 0,
-        'false_true': 0
+        'true_positive': 0,
+        'true_negative': 0,
+        'underconfident': 0,
+        'overconfident': 0,
+        'unknown': 0,
     }
     
     # Track per-attempt statistics
