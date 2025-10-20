@@ -1284,7 +1284,7 @@ def compute_score(solution_str, ground_truth, extra_info, data_source):
         diversity_resp = compute_diversity_scores(responses, threshold=0.7)
         
         reward_model_think = compute_reward_scores(extra_info[0]['prompt_think'], thinking_raw)
-        reward_model_resp = compute_reward_scores(extra_info[0]['prompt'], responses)
+        reward_model_resp = compute_reward_scores(extra_info[0]['prompt_simple'], responses)
 
         # Process each item in the batch with its diversity score
         scores = []
