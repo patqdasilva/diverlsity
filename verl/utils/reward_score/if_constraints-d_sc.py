@@ -10,6 +10,7 @@ import random
 import re
 from difflib import SequenceMatcher
 from typing import Dict, List, Union, Any
+from scipy.stats import gmean
 
 import emoji
 import numpy as np
@@ -670,7 +671,7 @@ def compute_reward_scores(prompt: str, responses: List[str]) -> List[float]:
             
     # Shift and scale to [0, 1] range, then apply power to penalize low scores
     min_clip, max_clip = -10.0, 35.0
-    power = 2.5
+    power = 1.2
     
     normalized = []
     for s in scores:
@@ -1173,7 +1174,7 @@ def draft_verification_match(draft, verify, ground_truth, no_hacking):
 def compute_score_single(solution_str, ground_truth, extra_info, data_source, diversity_score=0.0):
     """Score a single response with optional diversity bonus."""
     response = extract_xml_answer(solution_str, 'response')
-    thinking = extract_xml_answer(solution_str, 'thinking', remove_tags=['verify'])
+    thinking = extract_xml_answer(solution_str, 'thinking')
 
     # Format rewards
     think_format, thoughts = follows_tag_format(solution_str, 'thinking')
@@ -1289,7 +1290,7 @@ def compute_score(solution_str, ground_truth, extra_info, data_source):
         # Process each item in the batch with its diversity score
         scores = []
         for sol, gt, ei, ds, div_think, div_resp, rm_think, rm_resp in zip(solution_str, ground_truth, extra_info, data_source, diversity_think, diversity_resp, reward_model_think, reward_model_resp):
-            score = compute_score_single(sol, gt, ei, ds, diversity_score=div_think*div_resp*rm_think*rm_resp)
+            score = compute_score_single(sol, gt, ei, ds, diversity_score=gmean([div_think,div_resp,rm_think,rm_resp]))
             reward_data = [
                 (ei['index'], 'train-diversity_think', float(div_think), ei['split']),
                 (ei['index'], 'train-diversity_resp', float(div_resp), ei['split']),
