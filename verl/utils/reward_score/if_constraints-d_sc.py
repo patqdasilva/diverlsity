@@ -1166,7 +1166,7 @@ def compute_score_single(solution_str, ground_truth, extra_info, data_source, di
     # Format rewards
     think_format, thoughts = follows_tag_format(solution_str, 'thinking')
     resp_format = follows_resp_format(solution_str)
-    triples, draft_format, analyze_format, verify_format = thinking_microsections(thinking)
+    triples, (draft_format, analyze_format, verify_format) = thinking_microsections(thinking)
     n_verify_format = []
     if triples:
         for triple in triples:
