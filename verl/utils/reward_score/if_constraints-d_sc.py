@@ -1226,7 +1226,7 @@ def compute_score_single(solution_str, ground_truth, extra_info, data_source, di
         mt_reward = n_constraints*mt_pct_reward
     
     # Calculate final reward
-    auxillary_reward = gmean(div_think+ep, div_resp+ep, rm_think+ep, rm_resp+ep) - ep
+    auxillary_reward = gmean([div_think+ep, div_resp+ep, rm_think+ep, rm_resp+ep]) - ep
     if not no_hacking:
         final_reward = -1 # discourage hacking
         format_multiplier = 0
