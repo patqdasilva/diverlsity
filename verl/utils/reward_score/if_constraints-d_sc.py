@@ -1289,7 +1289,7 @@ def compute_score(solution_str, ground_truth, extra_info, data_source):
         # Process each item in the batch with its diversity score
         scores = []
         for sol, gt, ei, ds, div_think, div_resp, rm_think, rm_resp in zip(solution_str, ground_truth, extra_info, data_source, diversity_think, diversity_resp, reward_model_think, reward_model_resp):
-            score = compute_score_single(sol, gt, ei, ds, diversity_score=diversity_think*diversity_resp*rm_think*rm_resp)
+            score = compute_score_single(sol, gt, ei, ds, diversity_score=div_think*div_resp*rm_think*rm_resp)
             reward_data = [
                 (ei['index'], 'train-diversity_think', float(div_think), ei['split']),
                 (ei['index'], 'train-diversity_resp', float(div_resp), ei['split']),
