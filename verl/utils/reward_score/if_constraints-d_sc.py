@@ -9,7 +9,7 @@ import math
 import random
 import re
 from difflib import SequenceMatcher
-from typing import Dict, List, Union
+from typing import Dict, List, Union, Any
 
 import emoji
 import numpy as np
@@ -17,6 +17,7 @@ import torch
 import torch.nn.functional as F
 from scipy.optimize import linear_sum_assignment
 from sentence_transformers import SentenceTransformer, util
+from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
 from evaluation_lib import InputExample, test_instruction_following_strict
 from instructions_util import split_into_sentences
@@ -591,6 +592,82 @@ def compute_diversity_scores(responses: List[str], threshold: float = 0.8) -> Li
 
     return diversity_scores
 
+def get_reward_model():
+    """Lazy load reward model (Ray-safe singleton pattern)."""
+    global _reward_model, _reward_tokenizer
+    
+    if _reward_model is None:
+        model_name = "Skywork/Skywork-Reward-V2-Llama-3.1-8B"
+        
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        print(f"CUDA_VISIBLE_DEVICES: {os.environ.get('CUDA_VISIBLE_DEVICES', 'not set')}")
+        print(f"torch.cuda.is_available(): {torch.cuda.is_available()}")
+        print(f"torch.cuda.device_count(): {torch.cuda.device_count() if torch.cuda.is_available() else 0}")
+        
+        if device == "cuda":
+            model_kwargs = {
+                "attn_implementation": "flash_attention_2",
+                "torch_dtype": torch.bfloat16,
+                "device_map": device,
+                "num_labels": 1,
+            }
+        else:
+            print("WARNING: GPU not available for reward model, using CPU")
+            model_kwargs = {
+                "attn_implementation": "eager",
+                "torch_dtype": torch.float32,
+                "num_labels": 1,
+            }
+        
+        _reward_model = AutoModelForSequenceClassification.from_pretrained(
+            model_name,
+            **model_kwargs
+        ).eval()
+        
+        _reward_tokenizer = AutoTokenizer.from_pretrained(model_name)
+        
+        print(f"Loaded reward model {model_name} on {device}")
+    
+    return _reward_model, _reward_tokenizer
+
+def compute_reward_scores(prompt: str, responses: List[str]) -> List[float]:
+    """
+    Compute reward scores for a list of responses to a given prompt.
+    
+    Args:
+        prompt: The user prompt/question
+        responses: List of assistant responses to evaluate
+    
+    Returns:
+        List of reward scores, one per response
+    """
+    model, tokenizer = get_reward_model()
+    device = next(model.parameters()).device
+    
+    scores = []
+    
+    with torch.no_grad():
+        for response in responses:
+            # Create conversation format
+            conv = [
+                {"role": "user", "content": prompt},
+                {"role": "assistant", "content": response}
+            ]
+            
+            # Format and tokenize
+            conv_formatted = tokenizer.apply_chat_template(conv, tokenize=False)
+            
+            # Remove potential duplicate bos token
+            if tokenizer.bos_token is not None and conv_formatted.startswith(tokenizer.bos_token):
+                conv_formatted = conv_formatted[len(tokenizer.bos_token):]
+            
+            conv_tokenized = tokenizer(conv_formatted, return_tensors="pt").to(device)
+            
+            # Get reward score
+            score = model(**conv_tokenized).logits[0][0].item()
+            scores.append(score)
+    
+    return scores
 
 def write_data(data, filename='/models/rewards.csv'):
     """
@@ -955,12 +1032,27 @@ def compute_verification_score(auto, judge):
 def agg_scores_per_constraint(scores_by_attempt):
     constraint_ids = scores_by_attempt[0].keys()
     total_reward = 0
+    num_attempts = len(scores_by_attempt)
     
     # Track metrics across all constraints
     all_cc_values = []
     all_jc_values = []
     all_cc_deltas = []  # last - first
     all_jc_deltas = []  # last - first
+    
+    # Track verification categories
+    verification_categories = {
+        'no_mention': 0,
+        'unsure': 0,
+        'true_true': 0,
+        'false_false': 0,
+        'true_false': 0,
+        'false_true': 0
+    }
+    
+    # Track per-attempt statistics
+    per_attempt_cc = []
+    per_attempt_jc = []
     
     for constraint_id in constraint_ids:
         # Collect trajectory for this constraint
@@ -971,6 +1063,25 @@ def agg_scores_per_constraint(scores_by_attempt):
             cc, jc = attempt[constraint_id]
             cc_trajectory.append(cc)
             jc_trajectory.append(jc)
+            
+            # Infer category from scores
+            # (Note: this is approximate - ideally you'd store raw auto/judge)
+            if jc == 0.25:
+                category = 'no_mention'
+            elif jc == 0.7:
+                category = 'unsure'
+            elif jc == 1.0 and cc == 1:
+                category = 'true_positive'
+            elif jc == 1.0 and cc == 0:
+                category = 'true_negative'
+            elif jc == 0.2:
+                category = 'underconfident'
+            elif jc == 0.0:
+                category = 'overconfident'
+            else:
+                category = 'unknown'  # shouldn't happen
+            
+            verification_categories[category] += 1
         
         # Check if ever correct
         ever_correct = any(cc == 1 for cc in cc_trajectory)
@@ -1000,9 +1111,17 @@ def agg_scores_per_constraint(scores_by_attempt):
     
     avg_reward = total_reward / len(constraint_ids)
     
+    # Calculate category percentages
+    total_verifications = sum(verification_categories.values())
+    verification_percentages = {
+        k: v / total_verifications if total_verifications > 0 else 0
+        for k, v in verification_categories.items()
+    }
+    
     # Calculate statistics
     metrics = {
         'avg_reward': avg_reward,
+        'num_attempts': num_attempts,
         'cc_stats': {
             'mean': np.mean(all_cc_values),
             'std': np.std(all_cc_values),
@@ -1018,7 +1137,9 @@ def agg_scores_per_constraint(scores_by_attempt):
         'jc_delta': {
             'mean': np.mean(all_jc_deltas) if all_jc_deltas else 0,
             'std': np.std(all_jc_deltas) if all_jc_deltas else 0,
-        }
+        },
+        'verification_counts': verification_categories,
+        'verification_percentages': verification_percentages,
     }
     
     return avg_reward, metrics
@@ -1043,7 +1164,7 @@ def compute_score_single(solution_str, ground_truth, extra_info, data_source, di
     thinking = extract_xml_answer(solution_str, 'thinking')
 
     # Format rewards
-    think_format, thoughts = follows_tag_format(solution_str, 'thinking')
+    think_format, thoughts = extract_xml_answer(solution_str, 'thinking', remove_tags=['verify'])
     resp_format, responses = follows_tag_format(solution_str, 'response')
     triples, mt_format = thinking_microsections(thinking)
     verify_format = []
@@ -1078,6 +1199,7 @@ def compute_score_single(solution_str, ground_truth, extra_info, data_source, di
     constraint_reward = check_constraint_following(response, ground_truth, extra_info, no_hacking) 
     if extra_info['split'] == 'test':
         mt_reward = 1
+        diversity_score = 1
     elif not triples:
         mt_reward = 0
     else:
@@ -1101,7 +1223,7 @@ def compute_score_single(solution_str, ground_truth, extra_info, data_source, di
         final_reward = -0.5 + format_multiplier
     else:
         format_multiplier = 0.5 + 0.5*format_reward # scale reward based on formatting [0.5,1]
-        final_reward = constraint_reward*mt_reward*format_multiplier
+        final_reward = constraint_reward*mt_reward*format_multiplier*diversity_score
     reward_data = [
         (extra_info['index'], 'train-format_multiplier', float(format_multiplier), extra_info['split']),
         (extra_info['index'], 'train-constraint_reward', float(constraint_reward), extra_info['split']),
@@ -1115,7 +1237,7 @@ def compute_score_single(solution_str, ground_truth, extra_info, data_source, di
     if do_print:        
         print(f"--------------------------------")
         print(f"final_reward: {final_reward}")
-        print(f"constraint_reward: {constraint_reward} | mt_reward: {mt_reward} | format_reward: {format_reward} | format_multiplier: {format_multiplier}")
+        print(f"constraint_reward: {constraint_reward} | mt_reward: {mt_reward} | diversity_score: {diversity_score} | format_reward: {format_reward} | format_multiplier: {format_multiplier}")
         print(f"think_format: {think_format} | resp_format: {resp_format} | mt_format: {mt_format}")
         print(f"min_unique_words: {min_unique_words} | not_fuzzy_pattern: {not_fuzzy_pattern} | not_constraint_in_resp: {not_constraint_in_resp} | no_hacking: {no_hacking}")
         print(f"{ground_truth} | constraint_text: {extra_info['constraints']}")
@@ -1143,18 +1265,24 @@ def compute_score(solution_str, ground_truth, extra_info, data_source):
         # Extract responses for diversity computation
         responses = [extract_xml_answer(sol, 'response') for sol in solution_str]
         thinking = [extract_xml_answer(sol, 'thinking', remove_tags=['verify']) for sol in solution_str]
+        thinking_raw = [extract_xml_answer(sol, 'thinking') for sol in solution_str]
         
         # Compute diversity scores for all responses in this batch
         diversity_think = compute_diversity_scores(thinking, threshold=0.7)
         diversity_resp = compute_diversity_scores(responses, threshold=0.7)
+        
+        reward_model_think = compute_reward_scores(extra_info[0]['prompt_think'], thinking_raw)
+        reward_model_resp = compute_reward_scores(extra_info[0]['prompt'], responses)
 
         # Process each item in the batch with its diversity score
         scores = []
-        for sol, gt, ei, ds, div_think, div_resp in zip(solution_str, ground_truth, extra_info, data_source, diversity_think, diversity_resp):
-            score = compute_score_single(sol, gt, ei, ds, diversity_score=1.0)
+        for sol, gt, ei, ds, div_think, div_resp, rm_think, rm_resp in zip(solution_str, ground_truth, extra_info, data_source, diversity_think, diversity_resp, reward_model_think, reward_model_resp):
+            score = compute_score_single(sol, gt, ei, ds, diversity_score=diversity_think*diversity_resp*rm_think*rm_resp)
             reward_data = [
                 (ei['index'], 'train-diversity_think', float(div_think), ei['split']),
                 (ei['index'], 'train-diversity_resp', float(div_resp), ei['split']),
+                (ei['index'], 'train-rm_think', float(rm_think), ei['split']),
+                (ei['index'], 'train-rm_resp', float(rm_resp), ei['split']),
             ]
             write_data(reward_data)
             scores.append(score)
