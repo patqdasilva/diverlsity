@@ -24,6 +24,11 @@ from evaluation_lib import InputExample, test_instruction_following_strict
 from instructions_util import split_into_sentences
 
 
+import re
+import numpy as np
+from typing import List, Dict
+from scipy.optimize import linear_sum_assignment
+
 class ConstraintMatcher:
     """Rule-based constraint matching system with Hungarian algorithm matching."""
     
@@ -196,7 +201,7 @@ class ConstraintMatcher:
                 r'\bcopy\s+this\s+instruction\b',
                 r'\bdo\s+not\s+follow\s+the\s+instruction\b'
             ],
-            'copy:copy_span_idx': [
+            'new:copy_span_idx': [
                 r'\bcopy\s+the\s+span\b',
                 r'\bindex\s+\d+\s+and\s+\d+\b',
                 r'\bcharacter\s+indices?\b',
@@ -331,24 +336,19 @@ class ConstraintMatcher:
                 r'\bquotation\s+marks?\b.*\bentire\s+response\b'
             ]
         }
+        
+        # Precompile all regex patterns for better performance
+        self._compiled_patterns = {}
+        for constraint, pattern_list in self.patterns.items():
+            self._compiled_patterns[constraint] = [
+                re.compile(pattern, re.IGNORECASE) for pattern in pattern_list
+            ]
+        
+        # Precompile judgment patterns
+        self._true_pattern = re.compile(r'\btrue\b', re.IGNORECASE)
+        self._unsure_pattern = re.compile(r'\bunsure\b|\bunclear\b|\bmaybe\b|\bpossibly\b|\bunknown\b', re.IGNORECASE)
+        self._false_pattern = re.compile(r'\bfalse\b|\bfail', re.IGNORECASE)
 
-    # Helper function to match instruction to pattern
-    def match_instruction(instruction_text):
-        """
-        Match an instruction text to the appropriate pattern category.
-        Returns a list of matching pattern keys.
-        """
-        instruction_lower = instruction_text.lower()
-        matches = []
-        
-        for pattern_key, pattern_list in self.patterns.items():
-            for pattern in pattern_list:
-                if re.search(pattern, instruction_lower, re.IGNORECASE):
-                    matches.append(pattern_key)
-                    break
-        
-        return matches
-        
     def calculate_similarity(self, line: str, constraint: str) -> float:
         """
         Calculate similarity score between a line and a constraint.
@@ -360,27 +360,22 @@ class ConstraintMatcher:
         Returns:
             Similarity score (0.0 to 1.0)
         """
-        if constraint not in self.patterns:
-            print('EEEEEEEEEEEEEEEEEEEE')
+        if constraint not in self._compiled_patterns:
             return 0.0
         
-        patterns = self.patterns[constraint]
-        matches = 0
+        compiled_patterns = self._compiled_patterns[constraint]
+        matches = sum(1 for pattern in compiled_patterns if pattern.search(line))
         
-        for pattern in patterns:
-            if re.search(pattern, line, re.IGNORECASE):
-                matches += 1
+        if matches == 0:
+            return 0.0
         
-        # Normalize by number of patterns
-        score = matches / len(patterns) if patterns else 0.0
-        
-        # Bonus for exact/strong matches
-        if matches > 0:
-            score = min(1.0, score * 1.5)
+        # Normalize by number of patterns with bonus for strong matches
+        score = matches / len(compiled_patterns)
+        score = min(1.0, score * 1.5)
         
         return score
     
-    def create_cost_matrix(self, lines: List[str], candidates: List[str]) -> np.ndarray:
+    def create_cost_matrix(self, lines: List[str], candidates: List[str]) -> tuple:
         """
         Create cost matrix for Hungarian algorithm.
         
@@ -389,27 +384,24 @@ class ConstraintMatcher:
             candidates: List of candidate constraint names
             
         Returns:
-            Cost matrix (lines x candidates), where lower cost = better match
+            Tuple of (cost_matrix, similarity_matrix)
         """
         n_lines = len(lines)
         n_candidates = len(candidates)
         
-        # Create similarity matrix
-        similarity_matrix = np.zeros((n_lines, n_candidates))
+        # Create similarity matrix using vectorized operations where possible
+        similarity_matrix = np.zeros((n_lines, n_candidates), dtype=np.float32)
         
         for i, line in enumerate(lines):
             for j, candidate in enumerate(candidates):
                 similarity_matrix[i, j] = self.calculate_similarity(line, candidate)
         
         # Convert similarity to cost (higher similarity = lower cost)
-        # Use 1 - similarity as cost
         cost_matrix = 1.0 - similarity_matrix
-
-        # print(similarity_matrix)
         
         return cost_matrix, similarity_matrix
     
-    def lines_to_constraint(self, lines: List[str], candidates: List[str]) -> Dict[str, int]:
+    def lines_to_constraint(self, lines: List[str], candidates: List[str]) -> Dict[str, str]:
         """
         Map lines to constraints using Hungarian algorithm and extract judgments.
         
@@ -418,7 +410,7 @@ class ConstraintMatcher:
             candidates: List of candidate constraint names
             
         Returns:
-            Dictionary mapping each candidate to 1 (true) or 0 (false/missing)
+            Dictionary mapping each candidate to 'true', 'false', 'unsure', or 'nm'
         """
         # Initialize result with all candidates set to 0
         result = {candidate: 0 for candidate in candidates}
@@ -432,53 +424,48 @@ class ConstraintMatcher:
         # Create cost matrix
         cost_matrix, similarity_matrix = self.create_cost_matrix(non_empty_lines, candidates)
         
-        # Apply Hungarian algorithm
-        # Note: we need to handle the case where len(lines) != len(candidates)
         n_lines = len(non_empty_lines)
         n_candidates = len(candidates)
         
-        if n_lines == 0:
-            return result
-        
         # Pad matrix if needed to make it square
-        if n_lines < n_candidates:
-            # More candidates than lines - pad with high cost rows
-            padding = np.ones((n_candidates - n_lines, n_candidates))
-            cost_matrix = np.vstack([cost_matrix, padding])
-            similarity_matrix = np.vstack([similarity_matrix, np.zeros((n_candidates - n_lines, n_candidates))])
-        elif n_lines > n_candidates:
-            # More lines than candidates - pad with high cost columns
-            padding = np.ones((n_lines, n_lines - n_candidates))
-            cost_matrix = np.hstack([cost_matrix, padding])
-            similarity_matrix = np.hstack([similarity_matrix, np.zeros((n_lines, n_lines - n_candidates))])
+        max_dim = max(n_lines, n_candidates)
+        if n_lines < max_dim or n_candidates < max_dim:
+            padded_cost = np.ones((max_dim, max_dim), dtype=np.float32)
+            padded_similarity = np.zeros((max_dim, max_dim), dtype=np.float32)
+            
+            padded_cost[:n_lines, :n_candidates] = cost_matrix
+            padded_similarity[:n_lines, :n_candidates] = similarity_matrix
+            
+            cost_matrix = padded_cost
+            similarity_matrix = padded_similarity
         
         # Run Hungarian algorithm
         row_ind, col_ind = linear_sum_assignment(cost_matrix)
         
-        # Extract matches and determine true/false
+        # Extract matches and determine true/false using precompiled patterns
         for line_idx, candidate_idx in zip(row_ind, col_ind):
             # Only consider matches within the original dimensions
             if line_idx < n_lines and candidate_idx < n_candidates:
-                candidate = candidates[candidate_idx]
-                line = non_empty_lines[line_idx]
                 similarity = similarity_matrix[line_idx, candidate_idx]
+                
                 # Only accept match if similarity is above threshold
-                if similarity > 0.1:  # Minimum threshold for valid match
-                    # print(line_idx, candidate_idx)
-                    # Check if line contains 'true' or positive indicators
-                    if re.search(r'\btrue\b', line, re.IGNORECASE):
+                if similarity > 0.1:
+                    candidate = candidates[candidate_idx]
+                    line = non_empty_lines[line_idx]
+                    
+                    # Check judgments using precompiled patterns
+                    if self._true_pattern.search(line):
                         result[candidate] = 'true'
-                    elif re.search(r'\bunsure\b|\bunclear\b|\bmaybe\b|\bpossibly\b|\bunknown\b', line, re.IGNORECASE):
+                    elif self._unsure_pattern.search(line):
                         result[candidate] = 'unsure'
-                    elif re.search(r'\bfalse\b|\bfail', line, re.IGNORECASE):
+                    elif self._false_pattern.search(line):
                         result[candidate] = 'false'
                     else:
-                        # Default to 1 if matched with good similarity but no explicit true/false
                         result[candidate] = 'nm'
         
         return result
     
-    def extract_verify_logic(self, verify: str, candidates: List[str]) -> Dict[str, int]:
+    def extract_verify_logic(self, verify: str, candidates: List[str]) -> Dict[str, str]:
         """
         Main function to extract verification logic from verify text.
         
@@ -487,15 +474,15 @@ class ConstraintMatcher:
             candidates: List of candidate constraint names
             
         Returns:
-            Dictionary mapping each candidate to 1 (true) or 0 (false/missing)
+            Dictionary mapping each candidate to 'true', 'false', 'unsure', or 'nm'
         """
-        lines = [line.lower() for line in verify.split('\n')]
+        lines = verify.lower().split('\n')
         verify_scores = self.lines_to_constraint(lines, candidates)
         return verify_scores
 
 
 # Standalone function for easy import
-def extract_verify_logic(verify: str, candidates: List[str]) -> Dict[str, int]:
+def extract_verify_logic(verify: str, candidates: List[str]) -> Dict[str, str]:
     """
     Maps the verification section to atomic constraints with the judgment.
     
@@ -504,7 +491,7 @@ def extract_verify_logic(verify: str, candidates: List[str]) -> Dict[str, int]:
         candidates: List of candidate constraint names
         
     Returns:
-        Dictionary mapping each candidate to 1 (true) or 0 (false/missing)
+        Dictionary mapping each candidate to 'true', 'false', 'unsure', or 'nm'
     """
     matcher = ConstraintMatcher()
     return matcher.extract_verify_logic(verify, candidates)
@@ -633,53 +620,51 @@ def get_reward_model():
     return _reward_model, _reward_tokenizer
 
 def compute_reward_scores(prompt: str, responses: List[str]) -> List[float]:
-    """
-    Compute reward scores for a list of responses to a given prompt.
-    
-    Args:
-        prompt: The user prompt/question
-        responses: List of assistant responses to evaluate
-    
-    Returns:
-        List of reward scores, one per response
-    """
+    """Batch all responses together for a single forward pass."""
     model, tokenizer = get_reward_model()
     device = next(model.parameters()).device
     
-    scores = []
+    # Prepare all conversations at once
+    conversations = []
+    for response in responses:
+        conv = [
+            {"role": "user", "content": prompt},
+            {"role": "assistant", "content": response}
+        ]
+        conversations.append(conv)
     
+    # Format all conversations
+    formatted_convs = []
+    for conv in conversations:
+        conv_formatted = tokenizer.apply_chat_template(conv, tokenize=False)
+        # Remove duplicate bos token if present
+        if tokenizer.bos_token is not None and conv_formatted.startswith(tokenizer.bos_token):
+            conv_formatted = conv_formatted[len(tokenizer.bos_token):]
+        formatted_convs.append(conv_formatted)
+    
+    # Batch tokenize all at once
     with torch.no_grad():
-        for response in responses:
-            # Create conversation format
-            conv = [
-                {"role": "user", "content": prompt},
-                {"role": "assistant", "content": response}
-            ]
-            
-            # Format and tokenize
-            conv_formatted = tokenizer.apply_chat_template(conv, tokenize=False)
-            
-            # Remove potential duplicate bos token
-            if tokenizer.bos_token is not None and conv_formatted.startswith(tokenizer.bos_token):
-                conv_formatted = conv_formatted[len(tokenizer.bos_token):]
-            
-            conv_tokenized = tokenizer(conv_formatted, return_tensors="pt").to(device)
-            
-            # Get reward score
-            score = model(**conv_tokenized).logits[0][0].item()
-            scores.append(score)
-            
-    # Shift and scale to [0, 1] range, then apply power to penalize low scores
+        batch_tokenized = tokenizer(
+            formatted_convs,
+            padding=True,  # Pad to same length
+            truncation=True,
+            return_tensors="pt"
+        ).to(device)
+        
+        # Single forward pass for all responses
+        logits = model(**batch_tokenized).logits  # Shape: (batch_size, 1)
+        scores = logits.squeeze(-1).cpu().tolist()  # Extract scores
+    
+    # Apply normalization (same as before)
     min_clip, max_clip = -10.0, 35.0
     power = 1.2
     
     normalized = []
     for s in scores:
-        # First normalize to [0, 1]
         linear = max(0.0, min(1.0, (s - min_clip) / (max_clip - min_clip)))
-        # Apply power to create non-linear penalty
         norm = linear ** power
         normalized.append(norm)
+    
     return normalized
 
 def write_data(data, filename='/models/rewards.csv'):
@@ -965,9 +950,8 @@ def check_constraint_following(response, ground_truth, extra_info, no_hacking):
     for instr, follow_instr in zip(constraints, constraint_eval.follow_instruction_list):
         # constraint_data.append((extra_info['index'], f'constr_raw-{instr}', float(follow_instr), extra_info['split']))
         constraint_data.append((extra_info['index'], f'constr_nrh-{instr}', float(follow_instr and no_hacking), extra_info['split']))
-    write_data(constraint_data)
     instr_level_reward = np.mean(constraint_eval.follow_instruction_list) #max_length_normalized(constraint_eval.follow_instruction_list, base=1.5)
-    return instr_level_reward
+    return instr_level_reward, constraint_data
 
 def thinking_microsections(thinking):
     """Function to extract draft, analyze, and verify triples."""
@@ -1206,11 +1190,9 @@ def compute_score_single(solution_str, ground_truth, extra_info, data_source, di
         (extra_info['index'], 'hack-not_fuzzy_pattern', float(not_fuzzy_pattern), extra_info['split']),
         (extra_info['index'], 'hack-not_constraint_in_resp', float(not_constraint_in_resp), extra_info['split']),
         (extra_info['index'], 'hack-no_hacking', float(no_hacking), extra_info['split']),
-    ]
-    write_data(format_data)
-    
+    ]    
     # Constraint reward   
-    constraint_reward = check_constraint_following(response, ground_truth, extra_info, no_hacking) 
+    constraint_reward, constraint_data = check_constraint_following(response, ground_truth, extra_info, no_hacking) 
     if extra_info['split'] == 'test':
         mt_reward = 1
         diversity_score = 1
@@ -1245,7 +1227,6 @@ def compute_score_single(solution_str, ground_truth, extra_info, data_source, di
         (extra_info['index'], 'train-mt_reward', float(mt_reward), extra_info['split']),
         (extra_info['index'], 'train-final_reward', float(final_reward), extra_info['split']),
     ]
-    write_data(reward_data)
     
     do_print = random.randint(1, 128) == 1 # print avg 4 per step
     if do_print:        
@@ -1258,7 +1239,7 @@ def compute_score_single(solution_str, ground_truth, extra_info, data_source, di
         print(f"[Solution string]\n{solution_str}")
         print(f"--------------------------------")
     
-    return final_reward
+    return final_reward, format_data + reward_data + constraint_data
 
 
 def compute_score(solution_str, ground_truth, extra_info, data_source):
@@ -1290,16 +1271,19 @@ def compute_score(solution_str, ground_truth, extra_info, data_source):
 
         # Process each item in the batch with its diversity score
         scores = []
+        out_datas = []
         for sol, gt, ei, ds, div_think, div_resp, rm_think, rm_resp in zip(solution_str, ground_truth, extra_info, data_source, diversity_think, diversity_resp, reward_model_think, reward_model_resp):
-            score = compute_score_single(sol, gt, ei, ds, diversity_score=gmean([div_think,div_resp,rm_think,rm_resp]))
-            reward_data = [
-                (ei['index'], 'train-diversity_think', float(div_think), ei['split']),
-                (ei['index'], 'train-diversity_resp', float(div_resp), ei['split']),
-                (ei['index'], 'train-rm_think', float(rm_think), ei['split']),
-                (ei['index'], 'train-rm_resp', float(rm_resp), ei['split']),
-            ]
-            write_data(reward_data)
+            score, out_data = compute_score_single(sol, gt, ei, ds, diversity_score=gmean([div_think,div_resp,rm_think,rm_resp]))
+            out_datas.extend(
+                [
+                    (ei['index'], 'train-diversity_think', float(div_think), ei['split']),
+                    (ei['index'], 'train-diversity_resp', float(div_resp), ei['split']),
+                    (ei['index'], 'train-rm_think', float(rm_think), ei['split']),
+                    (ei['index'], 'train-rm_resp', float(rm_resp), ei['split']),
+                ] + out_data
+            )
             scores.append(score)
+        write_data(out_datas)
         return scores
     else:
         # Single item processing - no diversity bonus
