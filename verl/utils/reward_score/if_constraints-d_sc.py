@@ -511,6 +511,7 @@ def extract_verify_logic(verify: str, candidates: List[str]) -> Dict[str, int]:
 
 # Global embedding model - lazy loaded and cached
 _embedding_model = None
+_reward_model, _reward_tokenizer = None, None
 
 def get_embedding_model():
     """Lazy load embedding model (Ray-safe singleton pattern)."""
@@ -666,8 +667,19 @@ def compute_reward_scores(prompt: str, responses: List[str]) -> List[float]:
             # Get reward score
             score = model(**conv_tokenized).logits[0][0].item()
             scores.append(score)
+            
+    # Shift and scale to [0, 1] range, then apply power to penalize low scores
+    min_clip, max_clip = -10.0, 35.0
+    power = 2.5
     
-    return scores
+    normalized = []
+    for s in scores:
+        # First normalize to [0, 1]
+        linear = max(0.0, min(1.0, (s - min_clip) / (max_clip - min_clip)))
+        # Apply power to create non-linear penalty
+        norm = linear ** power
+        normalized.append(norm)
+    return normalized
 
 def write_data(data, filename='/models/rewards.csv'):
     """
