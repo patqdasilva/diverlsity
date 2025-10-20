@@ -1173,10 +1173,10 @@ def draft_verification_match(draft, verify, ground_truth, no_hacking):
 def compute_score_single(solution_str, ground_truth, extra_info, data_source, diversity_score=0.0):
     """Score a single response with optional diversity bonus."""
     response = extract_xml_answer(solution_str, 'response')
-    thinking = extract_xml_answer(solution_str, 'thinking')
+    thinking = extract_xml_answer(solution_str, 'thinking', remove_tags=['verify'])
 
     # Format rewards
-    think_format, thoughts = extract_xml_answer(solution_str, 'thinking', remove_tags=['verify'])
+    think_format, thoughts = follows_tag_format(solution_str, 'thinking')
     resp_format, responses = follows_tag_format(solution_str, 'response')
     triples, mt_format = thinking_microsections(thinking)
     verify_format = []
