@@ -969,7 +969,7 @@ def thinking_microsections(thinking):
     verifications = re.findall(verify_pattern, thinking, re.DOTALL)
     
     # Combine into triples (assuming the correct order)
-    format_reward = sum([len(drafts) > 0, len(analyses) > 0, len(verifications) > 0])
+    format_reward = [len(drafts) > 0, len(analyses) > 0, len(verifications) > 0]
     min_len = min(len(drafts), len(verifications))
     
     for i in range(min_len):
@@ -1156,25 +1156,36 @@ def draft_verification_match(draft, verify, ground_truth, no_hacking):
     # print('cc_jc', cc_jc)
     return cc_jc
 
-def compute_score_single(solution_str, ground_truth, extra_info, data_source, diversity_score=0.0):
+def compute_score_single(solution_str, ground_truth, extra_info, data_source, div_think, div_resp, rm_think, rm_resp):
     """Score a single response with optional diversity bonus."""
+    if not solution_str.strip().startswith('<thinking>'):
+        solution_str = '<thinking>\n' + solution_str
     response = extract_xml_answer(solution_str, 'response')
     thinking = extract_xml_answer(solution_str, 'thinking')
 
     # Format rewards
     think_format, thoughts = follows_tag_format(solution_str, 'thinking')
-    resp_format, responses = follows_tag_format(solution_str, 'response')
-    triples, mt_format = thinking_microsections(thinking)
-    verify_format = []
+    resp_format = follows_resp_format(solution_str)
+    triples, draft_format, analyze_format, verify_format = thinking_microsections(thinking)
+    n_verify_format = []
     if triples:
         for triple in triples:
             lines = triple[2].split('\n')
             candidates = ground_truth['instruction_id']
-            verify_format.append(0 if len(lines) > len(candidates) else 1)
-        verify_format = np.mean(verify_format)
+            n_verify_format.append(0 if len(lines) > len(candidates) else 1)
+        n_verify_format = np.mean(n_verify_format)
     else:
-        verify_format = 0
-    format_reward = sum([think_format, resp_format, mt_format, verify_format])/6
+        n_verify_format = 0
+    ep = 0.1
+    format_components = [
+        think_format + ep,
+        resp_format + ep,
+        draft_format + ep,
+        analyze_format + ep,
+        verify_format + ep,
+        n_verify_format + ep
+    ]
+    format_reward = gmean(format_components) - ep
     
     # Prevent reward hacking
     min_unique_words = len(set(response.split(' '))) > 5
@@ -1185,12 +1196,16 @@ def compute_score_single(solution_str, ground_truth, extra_info, data_source, di
     format_data = [
         (extra_info['index'], 'format-think_format', float(think_format), extra_info['split']),
         (extra_info['index'], 'format-resp_format', float(resp_format), extra_info['split']),
-        (extra_info['index'], 'format-micro_think_format', float(mt_format), extra_info['split']),
+        (extra_info['index'], 'format-draft_format', float(draft_format), extra_info['split']),
+        (extra_info['index'], 'format-analyze_format', float(analyze_format), extra_info['split']),
+        (extra_info['index'], 'format-verify_format', float(verify_format), extra_info['split']),
+        (extra_info['index'], 'format-n_verify_format', float(n_verify_format), extra_info['split']),
+        (extra_info['index'], 'format-format_reward', float(format_reward), extra_info['split']),
         (extra_info['index'], 'hack-min_unique_words', float(min_unique_words), extra_info['split']),
         (extra_info['index'], 'hack-not_fuzzy_pattern', float(not_fuzzy_pattern), extra_info['split']),
         (extra_info['index'], 'hack-not_constraint_in_resp', float(not_constraint_in_resp), extra_info['split']),
         (extra_info['index'], 'hack-no_hacking', float(no_hacking), extra_info['split']),
-    ]    
+    ]
     # Constraint reward   
     constraint_reward, constraint_data = check_constraint_following(response, ground_truth, extra_info, no_hacking) 
     if extra_info['split'] == 'test':
@@ -1211,6 +1226,7 @@ def compute_score_single(solution_str, ground_truth, extra_info, data_source, di
         mt_reward = n_constraints*mt_pct_reward
     
     # Calculate final reward
+    auxillary_reward = gmean(div_think+ep, div_resp+ep, rm_think+ep, rm_resp+ep) - ep
     if not no_hacking:
         final_reward = -1 # discourage hacking
         format_multiplier = 0
@@ -1219,12 +1235,13 @@ def compute_score_single(solution_str, ground_truth, extra_info, data_source, di
         final_reward = -0.5 + format_multiplier
     else:
         format_multiplier = 0.5 + 0.5*format_reward # scale reward based on formatting [0.5,1]
-        final_reward = constraint_reward*mt_reward*format_multiplier*diversity_score
+        final_reward = constraint_reward*mt_reward*format_multiplier*auxillary_reward
     reward_data = [
         (extra_info['index'], 'train-format_multiplier', float(format_multiplier), extra_info['split']),
         (extra_info['index'], 'train-constraint_reward', float(constraint_reward), extra_info['split']),
         (extra_info['index'], 'train-constraint_reward-nh', float(constraint_reward if no_hacking else 0), extra_info['split']),
         (extra_info['index'], 'train-mt_reward', float(mt_reward), extra_info['split']),
+        (extra_info['index'], 'train-auxillary_reward', float(auxillary_reward), extra_info['split']),
         (extra_info['index'], 'train-final_reward', float(final_reward), extra_info['split']),
     ]
     
@@ -1232,8 +1249,9 @@ def compute_score_single(solution_str, ground_truth, extra_info, data_source, di
     if do_print:        
         print(f"--------------------------------")
         print(f"final_reward: {final_reward}")
-        print(f"constraint_reward: {constraint_reward} | mt_reward: {mt_reward} | diversity_score: {diversity_score} | format_reward: {format_reward} | format_multiplier: {format_multiplier}")
-        print(f"think_format: {think_format} | resp_format: {resp_format} | mt_format: {mt_format}")
+        print(f"constraint_reward: {constraint_reward} | mt_reward: {mt_reward} | auxillary_reward: {auxillary_reward} | format_reward: {format_reward}")
+        print(f"div_think: {div_think} | div_resp: {div_resp} | rm_think: {rm_think} | rm_resp: {rm_resp}")
+        print(f"think_format: {think_format} | resp_format: {resp_format} | draft_format: {draft_format} | analyze_format: {analyze_format} | verify_format: {verify_format} | n_verify_format: {n_verify_format}")
         print(f"min_unique_words: {min_unique_words} | not_fuzzy_pattern: {not_fuzzy_pattern} | not_constraint_in_resp: {not_constraint_in_resp} | no_hacking: {no_hacking}")
         print(f"{ground_truth} | constraint_text: {extra_info['constraints']}")
         print(f"[Solution string]\n{solution_str}")
@@ -1272,8 +1290,16 @@ def compute_score(solution_str, ground_truth, extra_info, data_source):
         # Process each item in the batch with its diversity score
         scores = []
         out_datas = []
-        for sol, gt, ei, ds, div_think, div_resp, rm_think, rm_resp in zip(solution_str, ground_truth, extra_info, data_source, diversity_think, diversity_resp, reward_model_think, reward_model_resp):
-            score, out_data = compute_score_single(sol, gt, ei, ds, diversity_score=gmean([div_think,div_resp,rm_think,rm_resp]))
+        packaged = zip(
+            solution_str,
+            ground_truth,
+            extra_info,
+            data_source,
+            diversity_think, diversity_resp,
+            reward_model_think, reward_model_resp
+        )
+        for sol, gt, ei, ds, div_think, div_resp, rm_think, rm_resp in packaged:
+            score, out_data = compute_score_single(sol, gt, ei, ds, div_think, div_resp, rm_think, rm_resp)
             out_datas.extend(
                 [
                     (ei['index'], 'train-diversity_think', float(div_think), ei['split']),
