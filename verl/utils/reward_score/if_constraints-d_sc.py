@@ -518,7 +518,7 @@ def get_embedding_model():
     global _embedding_model, _embedding_tokenizer
     
     if _embedding_model is None:
-        model_name = "/models/Qwen3-Embedding-0.6B/Qwen3-Embedding-0.6B"
+        model_name = "/models/grpo-verl-Qwen3-Embedding-0.6B/Qwen3-Embedding-0.6B"
         
         device = "cuda" if torch.cuda.is_available() else "cpu"
         print(f"CUDA_VISIBLE_DEVICES: {os.environ.get('CUDA_VISIBLE_DEVICES', 'not set')}")
@@ -598,7 +598,7 @@ def get_reward_model():
     global _reward_model, _reward_tokenizer
     
     if _reward_model is None:
-        model_name = "/models/Skywork-Reward-V2-Llama-3.1-8B/Skywork-Reward-V2-Llama-3.1-8B"
+        model_name = "/models/grpo-verl-Skywork-Reward-V2-Llama-3.1-8B/Skywork-Reward-V2-Llama-3.1-8B"
         
         device = "cuda" if torch.cuda.is_available() else "cpu"
         print(f"CUDA_VISIBLE_DEVICES: {os.environ.get('CUDA_VISIBLE_DEVICES', 'not set')}")
