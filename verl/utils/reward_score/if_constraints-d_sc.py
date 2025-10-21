@@ -1006,25 +1006,28 @@ def compute_verification_score(auto, judge):
     """
     Reward accurate self-assessment.
     Penalize overconfidence on errors more than underconfidence on correct answers.
+    
+    Generally considers that overcondifence is the dominant strategy in the beginning
 
     Calibrating Expectations for always using one strategy:
-    - Never evaluate: 0.25
+    - Never evaluate: 0
     - Always true: 0.5
     - Always false: 0.6
-    - Always unsure: 0.7
+    - Always unsure: 0.5
     """
     if judge == 'nm':
-        return 0.25  # Small default for parse failures
+        return -0.1  # No mention
     elif judge == 'unsure':
-        return 0.7  # Slight penalty vs confident correct
+        return 0.7  # Neutral for not being sure
     elif auto and judge == 'true':
         return 1.0  # Correct and knows it
     elif not auto and judge == 'false':
-        return 1.0  # Incorrect and knows it
+        return 0.95  # Incorrect and knows it
     elif auto and judge == 'false':
-        return 0.2  # Correct but cautious
+        return 0.05  # Underconfident
     else:  # auto == 0 and judge == 'true'
-        return 0.0  # Hallucinating correctness (worst)
+        return 0.0  # Overconfident
+    
 
 def agg_scores_per_constraint(scores_by_attempt):
     constraint_ids = scores_by_attempt[0].keys()
@@ -1064,20 +1067,18 @@ def agg_scores_per_constraint(scores_by_attempt):
             
             # Infer category from scores
             # (Note: this is approximate - ideally you'd store raw auto/judge)
-            if jc == 0.25:
+            if jc == -0.1:
                 category = 'no_mention'
             elif jc == 0.7:
                 category = 'unsure'
             elif jc == 1.0 and cc == 1:
                 category = 'true_positive'
-            elif jc == 1.0 and cc == 0:
+            elif jc == 0.95 and cc == 0:
                 category = 'true_negative'
-            elif jc == 0.2:
+            elif jc == 0.05:
                 category = 'underconfident'
             elif jc == 0.0:
                 category = 'overconfident'
-            else:
-                category = 'unknown'  # shouldn't happen
             
             verification_categories[category] += 1
         
@@ -1086,14 +1087,14 @@ def agg_scores_per_constraint(scores_by_attempt):
         
         if ever_correct:
             # Full point for eventual correctness
-            correctness_reward = 0.6
+            correctness_reward = 0.3
         else:
             # No points for never being correct
             correctness_reward = 0.0
         
         # Separate verification reward: average of jc scores
         # This incentivizes accurate self-assessment throughout
-        verification_reward = np.mean(jc_trajectory) * 0.4  # scale factor
+        verification_reward = np.mean(jc_trajectory) * 0.7  # scale factor
         
         constraint_reward = correctness_reward + verification_reward
         total_reward += constraint_reward
@@ -1156,7 +1157,7 @@ def draft_verification_match(draft, verify, ground_truth, no_hacking):
     # print('cc_jc', cc_jc)
     return cc_jc
 
-def compute_score_single(solution_str, ground_truth, extra_info, data_source, div_think, div_resp, rm_think, rm_resp):
+def compute_score_single(solution_str, ground_truth, extra_info, data_source, div_resp, rm_resp):
     """Score a single response with optional diversity bonus."""
     if not solution_str.strip().startswith('<thinking>'):
         solution_str = '<thinking>\n' + solution_str
@@ -1210,7 +1211,7 @@ def compute_score_single(solution_str, ground_truth, extra_info, data_source, di
     constraint_reward, constraint_data = check_constraint_following(response, ground_truth, extra_info, no_hacking) 
     if extra_info['split'] == 'test':
         mt_reward = 1
-        diversity_score = 1
+        div_resp = 1
     elif not triples:
         mt_reward = 0
     else:
@@ -1226,7 +1227,7 @@ def compute_score_single(solution_str, ground_truth, extra_info, data_source, di
         mt_reward = n_constraints*mt_pct_reward
     
     # Calculate final reward
-    auxillary_reward = gmean([div_think+ep, div_resp+ep, rm_think+ep, rm_resp+ep]) - ep
+    auxillary_reward = gmean([div_resp+ep, rm_resp+ep]) - ep
     if not no_hacking:
         final_reward = -1 # discourage hacking
         format_multiplier = 0
@@ -1250,7 +1251,7 @@ def compute_score_single(solution_str, ground_truth, extra_info, data_source, di
         print(f"--------------------------------")
         print(f"final_reward: {final_reward}")
         print(f"constraint_reward: {constraint_reward} | mt_reward: {mt_reward} | auxillary_reward: {auxillary_reward} | format_reward: {format_reward}")
-        print(f"div_think: {div_think} | div_resp: {div_resp} | rm_think: {rm_think} | rm_resp: {rm_resp}")
+        print(f"div_resp: {div_resp} | rm_resp: {rm_resp}")
         print(f"think_format: {think_format} | resp_format: {resp_format} | draft_format: {draft_format} | analyze_format: {analyze_format} | verify_format: {verify_format} | n_verify_format: {n_verify_format}")
         print(f"min_unique_words: {min_unique_words} | not_fuzzy_pattern: {not_fuzzy_pattern} | not_constraint_in_resp: {not_constraint_in_resp} | no_hacking: {no_hacking}")
         print(f"{ground_truth} | constraint_text: {extra_info['constraints']}")
@@ -1277,14 +1278,14 @@ def compute_score(solution_str, ground_truth, extra_info, data_source):
     if is_batch:
         # Extract responses for diversity computation
         responses = [extract_xml_answer(sol, 'response') for sol in solution_str]
-        thinking = [extract_xml_answer(sol, 'thinking', remove_tags=['verify']) for sol in solution_str]
-        thinking_raw = [extract_xml_answer(sol, 'thinking') for sol in solution_str]
+        # thinking = [extract_xml_answer(sol, 'thinking', remove_tags=['verify']) for sol in solution_str]
+        # thinking_raw = [extract_xml_answer(sol, 'thinking') for sol in solution_str]
         
         # Compute diversity scores for all responses in this batch
-        diversity_think = compute_diversity_scores(thinking, threshold=0.7)
+        # diversity_think = compute_diversity_scores(thinking, threshold=0.9)
         diversity_resp = compute_diversity_scores(responses, threshold=0.7)
         
-        reward_model_think = compute_reward_scores(extra_info[0]['prompt_think'], thinking_raw)
+        # reward_model_think = compute_reward_scores(extra_info[0]['prompt_think'], thinking_raw)
         reward_model_resp = compute_reward_scores(extra_info[0]['prompt_simple'], responses)
 
         # Process each item in the batch with its diversity score
@@ -1295,16 +1296,16 @@ def compute_score(solution_str, ground_truth, extra_info, data_source):
             ground_truth,
             extra_info,
             data_source,
-            diversity_think, diversity_resp,
-            reward_model_think, reward_model_resp
+            diversity_resp,
+            reward_model_resp
         )
-        for sol, gt, ei, ds, div_think, div_resp, rm_think, rm_resp in packaged:
-            score, out_data = compute_score_single(sol, gt, ei, ds, div_think, div_resp, rm_think, rm_resp)
+        for sol, gt, ei, ds, div_resp, rm_resp in packaged:
+            score, out_data = compute_score_single(sol, gt, ei, ds, div_resp, rm_resp)
             out_datas.extend(
                 [
-                    (ei['index'], 'train-diversity_think', float(div_think), ei['split']),
+                    # (ei['index'], 'train-diversity_think', float(div_think), ei['split']),
                     (ei['index'], 'train-diversity_resp', float(div_resp), ei['split']),
-                    (ei['index'], 'train-rm_think', float(rm_think), ei['split']),
+                    # (ei['index'], 'train-rm_think', float(rm_think), ei['split']),
                     (ei['index'], 'train-rm_resp', float(rm_resp), ei['split']),
                 ] + out_data
             )
