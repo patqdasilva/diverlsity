@@ -1108,7 +1108,7 @@ def aggregate_cc_sv_traj(cc_sv_trajectory, cat_sv, transition_cat):
         transition_key = f"{from_name}-{to_name}"
         transition_cat[transition_key] += 1
         
-        if STATE_NAMES[curr_state] in [4,5] or STATE_IDX[next_state] in [4,5]: # Missing EVal
+        if STATE_IDX[curr_state] in [4,5] or STATE_IDX[next_state] in [4,5]: # Missing EVal
             reward = -1
             break
         
