@@ -455,13 +455,11 @@ class ConstraintMatcher:
                     
                     # Check judgments using precompiled patterns
                     if self._true_pattern.search(line):
-                        result[candidate] = 'true'
-                    elif self._unsure_pattern.search(line):
-                        result[candidate] = 'unsure'
+                        result[candidate] = 1
                     elif self._false_pattern.search(line):
-                        result[candidate] = 'false'
+                        result[candidate] = 0
                     else:
-                        result[candidate] = 'nm'
+                        result[candidate] = -1
         
         return result
     
