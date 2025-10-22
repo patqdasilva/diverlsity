@@ -1201,15 +1201,15 @@ def compute_score_single(solution_str, ground_truth, extra_info, data_source, di
     resp_format = follows_resp_format(solution_str)
     triples, (draft_format, analyze_format, verify_format) = thinking_microsections(thinking)
     
-    n_verify_format = []
-    if triples:
-        for triple in triples:
-            lines = triple[2].split('\n')
-            candidates = ground_truth['instruction_id']
-            n_verify_format.append(0 if len(lines) > len(candidates) else 1)
-        n_verify_format = np.mean(n_verify_format)
-    else:
-        n_verify_format = 0
+    # n_verify_format = []
+    # if triples:
+    #     for triple in triples:
+    #         lines = triple[2].split('\n')
+    #         candidates = ground_truth['instruction_id']
+    #         n_verify_format.append(0 if len(lines) > len(candidates) else 1)
+    #     n_verify_format = np.mean(n_verify_format)
+    # else:
+    #     n_verify_format = 0
     
     if triples:
         final_draft = triples[-1][0]
@@ -1225,7 +1225,7 @@ def compute_score_single(solution_str, ground_truth, extra_info, data_source, di
         draft_format + ep,
         analyze_format + ep,
         verify_format + ep,
-        n_verify_format + ep,
+        # n_verify_format + ep,
         draft_resp_format + ep,
     ]
     format_reward = gmean(format_components) - ep
@@ -1242,7 +1242,7 @@ def compute_score_single(solution_str, ground_truth, extra_info, data_source, di
         (extra_info['index'], 'format-draft_format', float(draft_format), extra_info['split']),
         (extra_info['index'], 'format-analyze_format', float(analyze_format), extra_info['split']),
         (extra_info['index'], 'format-verify_format', float(verify_format), extra_info['split']),
-        (extra_info['index'], 'format-n_verify_format', float(n_verify_format), extra_info['split']),
+        # (extra_info['index'], 'format-n_verify_format', float(n_verify_format), extra_info['split']),
         (extra_info['index'], 'format-draft_resp_format', float(draft_resp_format), extra_info['split']),
         (extra_info['index'], 'format-format_reward', float(format_reward), extra_info['split']),
         (extra_info['index'], 'hack-min_unique_words', float(min_unique_words), extra_info['split']),
@@ -1296,7 +1296,7 @@ def compute_score_single(solution_str, ground_truth, extra_info, data_source, di
         print(f"final_reward: {final_reward}")
         print(f"constraint_reward: {constraint_reward} | mt_reward: {mt_reward} | auxillary_reward: {auxillary_reward} | format_reward: {format_reward}")
         print(f"div_resp: {div_resp} | rm_resp: {rm_resp}")
-        print(f"think_format: {think_format} | resp_format: {resp_format} | draft_format: {draft_format} | analyze_format: {analyze_format} | verify_format: {verify_format} | n_verify_format: {n_verify_format} | draft_resp_format: {draft_resp_format}")
+        print(f"think_format: {think_format} | resp_format: {resp_format} | draft_format: {draft_format} | analyze_format: {analyze_format} | verify_format: {verify_format} | draft_resp_format: {draft_resp_format}")
         print(f"min_unique_words: {min_unique_words} | not_fuzzy_pattern: {not_fuzzy_pattern} | not_constraint_in_resp: {not_constraint_in_resp} | no_hacking: {no_hacking}")
         # print(f"{ground_truth} | constraint_text: {extra_info['constraints']}")
         print(f"[Prompt]\n{extra_info['prompt_simple']}")
