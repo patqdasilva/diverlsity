@@ -703,7 +703,7 @@ def write_data_jsonl(data, filename='/models/rewards_mt.jsonl'):
 
 def follows_resp_format(text) -> bool:
     """Reward function that checks if the completion follows the strict format"""
-    pattern = r"<response>.*\n</response>$"
+    pattern = r"<response>.*\n</response>\n[end assistant]$"
     matches = re.search(pattern, text, re.DOTALL)
     return bool(matches)
 
@@ -1008,12 +1008,6 @@ def compute_verification_score(auto, judge):
     Penalize overconfidence on errors more than underconfidence on correct answers.
     
     Generally considers that overcondifence is the dominant strategy in the beginning
-
-    Calibrating Expectations for always using one strategy:
-    - Never evaluate: 0
-    - Always true: 0.5
-    - Always false: 0.6
-    - Always unsure: 0.5
     """
     if judge == 'nm':
         return -0.1  # No mention
@@ -1027,121 +1021,160 @@ def compute_verification_score(auto, judge):
         return 0.05  # Underconfident
     else:  # auto == 0 and judge == 'true'
         return 0.0  # Overconfident
-    
 
-def agg_scores_per_constraint(scores_by_attempt):
-    constraint_ids = scores_by_attempt[0].keys()
+
+def cc_sv_score(r_pre, r_cur, decay=1.0, min_score=-1.0, max_score=1.0):
+        """
+        Aggregate scores while ensuring they stay within [min_score, max_score].
+        """
+        headroom = np.where(
+            r_cur >= 0,
+            max_score - r_pre,
+            r_pre - min_score
+        )
+        
+        r_post = r_pre + decay * headroom * r_cur
+        r_post = np.clip(r_post, min_score, max_score)
+        
+        return r_post
+
+STATE_IDX = {
+    (0, 0): 0,
+    (0, 1): 1,
+    (1, 0): 2,
+    (1, 1): 3,
+    (0, -1): 4,
+    (1, -1): 5,
+}
+STATE_NAMES = {
+    (0, 0): "true_neg",
+    (0, 1): "conf_over",
+    (1, 0): "conf_under", 
+    (1, 1): "true_pos",
+    (0, -1): "miss_eval",
+    (1, -1): "miss_eval",
+}
+STARTING_SCORES = {
+    (0, 0): 0.3,
+    (0, 1): -0.5,
+    (1, 0): 0.8,
+    (1, 1): 1.0,
+    (0, -1): -1,
+    (1, -1): -1,
+}
+REWARD_MATRIX = np.array([
+    [  0.0, -0.5,  0.8,   0.9  ],  # From (0,0) true negative
+    [  0.3, -0.5,  0.3,   0.5  ],  # From (0,1) overconfident
+    [ -0.3, -0.5,  0.0,   0.5  ],  # From (1,0) underconfident
+    [ -0.5, -0.8, -0.2,   0.0  ]   # From (1,1) true positive
+])
+
+def create_transition_cat():
+    """
+    Create a dictionary to track transitions between states.
+    Keys are (from_state, to_state) tuples.
+    """
+    transition_cat = {}
+    
+    # All possible state combinations
+    states = [(0, 0), (0, 1), (1, 0), (1, 1), (0, -1), (1, -1)]
+    
+    # Initialize all possible transitions
+    for from_state in states:
+        for to_state in states:
+            from_name = STATE_NAMES[from_state]
+            to_name = STATE_NAMES[to_state]
+            transition_key = f"{from_name}-{to_name}"
+            transition_cat[transition_key] = 0
+    
+    return transition_cat
+
+def aggregate_cc_sv_traj(cc_sv_trajectory, cat_sv, transition_cat):
+    """
+    Updated to optionally track transitions.
+    
+    Args:
+        cc_sv_trajectory: List of (correct, confident) tuples
+        cat_sv: Dictionary tracking state counts
+        transition_cat: Optional dictionary tracking transition counts
+    """
+    reward = STARTING_SCORES[cc_sv_trajectory[0]]
+    decay = 0.9
+    pairs = [tuple(cc_sv_trajectory[i:i+2]) for i in range(len(cc_sv_trajectory) - 1)]
+    cat_sv[STATE_NAMES[cc_sv_trajectory[0]]] += 1
+    
+    for step, (curr_state, next_state) in enumerate(pairs):
+        cat_sv[STATE_NAMES[next_state]] += 1
+        from_name = STATE_NAMES[curr_state]
+        to_name = STATE_NAMES[next_state]
+        transition_key = f"{from_name}-{to_name}"
+        transition_cat[transition_key] += 1
+        
+        if STATE_NAMES[curr_state] in [4,5] or STATE_IDX[next_state] in [4,5]: # Missing EVal
+            reward = -1
+            break
+        
+        new_reward = REWARD_MATRIX[STATE_IDX[curr_state], STATE_IDX[next_state]]
+        reward = cc_sv_score(reward, new_reward, decay=decay)
+        decay = decay**(step+1)
+        
+        # Exit early on reward if we arrive at...
+        if STATE_IDX[next_state] in [1]: # Overconfident
+            break
+    
+    return reward, cat_sv, transition_cat
+
+def agg_scores_per_constraint(cc_sv):
+    constraint_ids = list(cc_sv.keys())
     total_reward = 0
-    num_attempts = len(scores_by_attempt)
-    
-    # Track metrics across all constraints
-    all_cc_values = []
-    all_jc_values = []
-    all_cc_deltas = []  # last - first
-    all_jc_deltas = []  # last - first
-    
-    # Track verification categories
-    verification_categories = {
-        'no_mention': 0,
-        'unsure': 0,
-        'true_positive': 0,
-        'true_negative': 0,
-        'underconfident': 0,
-        'overconfident': 0,
-        'unknown': 0,
-    }
-    
-    # Track per-attempt statistics
-    per_attempt_cc = []
-    per_attempt_jc = []
-    
-    for constraint_id in constraint_ids:
-        # Collect trajectory for this constraint
-        cc_trajectory = []
-        jc_trajectory = []
-        
-        for attempt_idx, attempt in enumerate(scores_by_attempt):
-            cc, jc = attempt[constraint_id]
-            cc_trajectory.append(cc)
-            jc_trajectory.append(jc)
-            
-            # Infer category from scores
-            # (Note: this is approximate - ideally you'd store raw auto/judge)
-            if jc == -0.1:
-                category = 'no_mention'
-            elif jc == 0.7:
-                category = 'unsure'
-            elif jc == 1.0 and cc == 1:
-                category = 'true_positive'
-            elif jc == 0.95 and cc == 0:
-                category = 'true_negative'
-            elif jc == 0.05:
-                category = 'underconfident'
-            elif jc == 0.0:
-                category = 'overconfident'
-            
-            verification_categories[category] += 1
-        
-        # Check if ever correct
-        ever_correct = any(cc == 1 for cc in cc_trajectory)
-        
-        if ever_correct:
-            # Full point for eventual correctness
-            correctness_reward = 0.3
-        else:
-            # No points for never being correct
-            correctness_reward = 0.0
-        
-        # Separate verification reward: average of jc scores
-        # This incentivizes accurate self-assessment throughout
-        verification_reward = np.mean(jc_trajectory) * 0.7  # scale factor
-        
-        constraint_reward = correctness_reward + verification_reward
-        total_reward += constraint_reward
-        
-        # Store trajectory data
-        all_cc_values.extend(cc_trajectory)
-        all_jc_values.extend(jc_trajectory)
-        
-        # Calculate deltas (last - first)
-        if len(cc_trajectory) > 1:
-            all_cc_deltas.append(cc_trajectory[-1] - cc_trajectory[0])
-            all_jc_deltas.append(jc_trajectory[-1] - jc_trajectory[0])
-    
-    avg_reward = total_reward / len(constraint_ids)
-    
-    # Calculate category percentages
-    total_verifications = sum(verification_categories.values())
-    verification_percentages = {
-        k: v / total_verifications if total_verifications > 0 else 0
-        for k, v in verification_categories.items()
-    }
-    
-    # Calculate statistics
+    num_attempts = len(cc_sv[constraint_ids[0]])
     metrics = {
-        'avg_reward': avg_reward,
         'num_attempts': num_attempts,
-        'cc_stats': {
-            'mean': np.mean(all_cc_values),
-            'std': np.std(all_cc_values),
+        'cc': {
+            'mean': 0,
+            'std': 0,
+            'delta': 0
         },
-        'jc_stats': {
-            'mean': np.mean(all_jc_values),
-            'std': np.std(all_jc_values),
-        },
-        'cc_delta': {
-            'mean': np.mean(all_cc_deltas) if all_cc_deltas else 0,
-            'std': np.std(all_cc_deltas) if all_cc_deltas else 0,
-        },
-        'jc_delta': {
-            'mean': np.mean(all_jc_deltas) if all_jc_deltas else 0,
-            'std': np.std(all_jc_deltas) if all_jc_deltas else 0,
-        },
-        'verification_counts': verification_categories,
-        'verification_percentages': verification_percentages,
+        'sv': {
+            'mean': 0,
+            'std': 0,
+            'delta': 0
+        }
     }
+    # Track verification categories
+    cat_sv = {
+        'miss_eval': 0,
+        'true_pos': 0,
+        'true_neg': 0,
+        'conf_under': 0,
+        'conf_over': 0,
+    }
+    cat_trans = create_transition_cat()
+    all_cc_traj, all_cc_delta = [], []
+    all_sv_traj, all_sv_delta = [], []
+    for constraint_id in constraint_ids:
+        cc_sv_trajectory = cc_sv[constraint_id]
+        reward, cat_sv, cat_trans = aggregate_cc_sv_traj(
+            cc_sv_trajectory, cat_sv, cat_trans
+        )
+        total_reward += reward
+        # Compute metrics
+        cc_traj = [a[0] for a in cc_sv_trajectory]
+        all_cc_traj.extend(cc_traj)
+        all_cc_delta.append(cc_traj[-1] - cc_traj[0])
+        sv_traj = [b[0] == b[1] for b in cc_sv_trajectory]
+        all_sv_traj.extend(sv_traj)
+        all_sv_delta.append(sv_traj[-1] -  sv_traj[0])
+    for name, data, delta in [('cc', all_cc_traj, all_cc_delta), ('sv', all_sv_traj, all_sv_delta)]:
+        metrics[name]['mean'] = np.mean(data)
+        metrics[name]['std'] = np.std(data)
+        metrics[name]['delta'] = np.mean(delta)
+            
+    metrics['total_reward'] = total_reward
+    metrics['cat_sv'] = cat_sv
+    metrics['cat_trans'] = cat_trans
     
-    return avg_reward, metrics
+    return total_reward, metrics
 
 def draft_verification_match(draft, verify, ground_truth, no_hacking):
     """Scores a single draft, verify pair"""
@@ -1149,13 +1182,12 @@ def draft_verification_match(draft, verify, ground_truth, no_hacking):
     # print('auto_scores', auto_scores)
     verify_scores = extract_verify_logic(verify, ground_truth['instruction_id'])
     # print('verify_scores', verify_scores)
-    cc_jc = {}
+    cc_sv = {}
     for constraint in ground_truth['instruction_id']:
         auto = auto_scores[constraint]
-        judge = verify_scores.get(constraint, 'nm')
-        cc_jc[constraint] = (int(auto), compute_verification_score(auto, judge))
-    # print('cc_jc', cc_jc)
-    return cc_jc
+        judge = verify_scores.get(constraint, -1)
+        cc_sv[constraint] = (auto, judge)
+    return cc_sv
 
 def compute_score_single(solution_str, ground_truth, extra_info, data_source, div_resp, rm_resp):
     """Score a single response with optional diversity bonus."""
@@ -1168,6 +1200,7 @@ def compute_score_single(solution_str, ground_truth, extra_info, data_source, di
     think_format, thoughts = follows_tag_format(solution_str, 'thinking')
     resp_format = follows_resp_format(solution_str)
     triples, (draft_format, analyze_format, verify_format) = thinking_microsections(thinking)
+    
     n_verify_format = []
     if triples:
         for triple in triples:
@@ -1177,6 +1210,14 @@ def compute_score_single(solution_str, ground_truth, extra_info, data_source, di
         n_verify_format = np.mean(n_verify_format)
     else:
         n_verify_format = 0
+    
+    if triples:
+        final_draft = triples[-1][0]
+        draft_resp_overlap = final_draft == response
+        draft_resp_format = 1 if draft_resp_overlap > 0.95 else 0
+    else:
+        draft_resp_format = 0
+        
     ep = 0.1
     format_components = [
         think_format + ep,
@@ -1184,7 +1225,8 @@ def compute_score_single(solution_str, ground_truth, extra_info, data_source, di
         draft_format + ep,
         analyze_format + ep,
         verify_format + ep,
-        n_verify_format + ep
+        n_verify_format + ep,
+        draft_resp_format + ep,
     ]
     format_reward = gmean(format_components) - ep
     
@@ -1201,6 +1243,7 @@ def compute_score_single(solution_str, ground_truth, extra_info, data_source, di
         (extra_info['index'], 'format-analyze_format', float(analyze_format), extra_info['split']),
         (extra_info['index'], 'format-verify_format', float(verify_format), extra_info['split']),
         (extra_info['index'], 'format-n_verify_format', float(n_verify_format), extra_info['split']),
+        (extra_info['index'], 'format-draft_resp_format', float(draft_resp_format), extra_info['split']),
         (extra_info['index'], 'format-format_reward', float(format_reward), extra_info['split']),
         (extra_info['index'], 'hack-min_unique_words', float(min_unique_words), extra_info['split']),
         (extra_info['index'], 'hack-not_fuzzy_pattern', float(not_fuzzy_pattern), extra_info['split']),
@@ -1215,16 +1258,15 @@ def compute_score_single(solution_str, ground_truth, extra_info, data_source, di
     elif not triples:
         mt_reward = 0
     else:
-        n_constraints = len(ground_truth['instruction_id'])
-        scores = []
+        cc_sv_all = {c: [] for c in ground_truth['instruction_id']}
         for triple in triples:
-            cc_jc = draft_verification_match(triple[0], triple[2], ground_truth, no_hacking)
-            # print(verify_score, '|', corr_score)
-            # scores.append((corr_score, verify_score))
-            scores.append(cc_jc)
-        mt_pct_reward, metrics = agg_scores_per_constraint(scores)
+            cc_sv = draft_verification_match(triple[0], triple[2], ground_truth, no_hacking)
+            for c in ground_truth['instruction_id']:
+                cc_sv_all[c].append(cc_sv[c])
+        mt_pct_reward, metrics = agg_scores_per_constraint(cc_sv_all)
+        metrics['split'] = extra_info['split']
         write_data_jsonl([metrics])
-        mt_reward = n_constraints*mt_pct_reward
+        mt_reward = mt_pct_reward
     
     # Calculate final reward
     auxillary_reward = gmean([div_resp+ep, rm_resp+ep]) - ep
@@ -1236,7 +1278,9 @@ def compute_score_single(solution_str, ground_truth, extra_info, data_source, di
         final_reward = -0.5 + format_multiplier
     else:
         format_multiplier = 0.5 + 0.5*format_reward # scale reward based on formatting [0.5,1]
-        final_reward = constraint_reward*mt_reward*format_multiplier*auxillary_reward
+        auxillary_reward = 0.5 + 0.5*auxillary_reward # scale reward based on formatting [0.5,1]
+        mt_reshaped = (mt_reward+1)/2 # rescale between 0 and 1
+        final_reward = constraint_reward*mt_reshaped*format_multiplier*auxillary_reward
     reward_data = [
         (extra_info['index'], 'train-format_multiplier', float(format_multiplier), extra_info['split']),
         (extra_info['index'], 'train-constraint_reward', float(constraint_reward), extra_info['split']),
@@ -1252,9 +1296,10 @@ def compute_score_single(solution_str, ground_truth, extra_info, data_source, di
         print(f"final_reward: {final_reward}")
         print(f"constraint_reward: {constraint_reward} | mt_reward: {mt_reward} | auxillary_reward: {auxillary_reward} | format_reward: {format_reward}")
         print(f"div_resp: {div_resp} | rm_resp: {rm_resp}")
-        print(f"think_format: {think_format} | resp_format: {resp_format} | draft_format: {draft_format} | analyze_format: {analyze_format} | verify_format: {verify_format} | n_verify_format: {n_verify_format}")
+        print(f"think_format: {think_format} | resp_format: {resp_format} | draft_format: {draft_format} | analyze_format: {analyze_format} | verify_format: {verify_format} | n_verify_format: {n_verify_format} | draft_resp_format: {draft_resp_format}")
         print(f"min_unique_words: {min_unique_words} | not_fuzzy_pattern: {not_fuzzy_pattern} | not_constraint_in_resp: {not_constraint_in_resp} | no_hacking: {no_hacking}")
-        print(f"{ground_truth} | constraint_text: {extra_info['constraints']}")
+        # print(f"{ground_truth} | constraint_text: {extra_info['constraints']}")
+        print(f"[Prompt]\n{extra_info['prompt_simple']}")
         print(f"[Solution string]\n{solution_str}")
         print(f"--------------------------------")
     
