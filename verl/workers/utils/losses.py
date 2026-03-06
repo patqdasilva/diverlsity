@@ -97,6 +97,12 @@ def _slice_response_from_unpad_output(tensor: torch.Tensor, data: TensorDict) ->
 def ppo_loss(config: ActorConfig, model_output, data: TensorDict, dp_group=None):
     """Computes ppo loss from model output (log_prob, entropy, values, etc. ) and old_log_probs from data."""
     log_prob = no_padding_2_padding(model_output["log_probs"], data)
+
+    # Apply Tsallis escort deformation: log(pi_theta * omega) = log(pi_theta) + log(omega)
+    omega_log_weights = data.get("omega_log_weights", None)
+    if omega_log_weights is not None:
+        log_prob = log_prob + omega_log_weights
+
     entropy = model_output.get("entropy", None)
     if entropy is not None:
         entropy = no_padding_2_padding(entropy, data)

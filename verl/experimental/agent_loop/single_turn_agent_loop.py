@@ -50,7 +50,7 @@ class SingleTurnAgentLoop(AgentLoopBase):
         # 3. generate sequences
         metrics = {}
         with simple_timer("generate_sequences", metrics):
-            output = await self.server_manager.generate(
+            gen_output = await self.server_manager.generate(
                 request_id=uuid4().hex,
                 prompt_ids=prompt_ids,
                 sampling_params=sampling_params,
@@ -58,17 +58,19 @@ class SingleTurnAgentLoop(AgentLoopBase):
                 video_data=videos,
             )
         if metrics.get("num_preempted") is None:
-            metrics["num_preempted"] = output.num_preempted if output.num_preempted is not None else -1
-        response_mask = [1] * len(output.token_ids)
+            metrics["num_preempted"] = gen_output.num_preempted if gen_output.num_preempted is not None else -1
+        response_mask = [1] * len(gen_output.token_ids)
 
         output = AgentLoopOutput(
             prompt_ids=prompt_ids,
-            response_ids=output.token_ids[: self.response_length],
+            response_ids=gen_output.token_ids[: self.response_length],
             response_mask=response_mask[: self.response_length],
-            response_logprobs=output.log_probs[: self.response_length] if output.log_probs else None,
+            response_logprobs=gen_output.log_probs[: self.response_length] if gen_output.log_probs else None,
+            response_entropies=gen_output.entropy[: self.response_length] if gen_output.entropy else None,
+            response_variances=gen_output.variance[: self.response_length] if gen_output.variance else None,
             routed_experts=(
-                output.routed_experts[: len(prompt_ids) + self.response_length]
-                if output.routed_experts is not None
+                gen_output.routed_experts[: len(prompt_ids) + self.response_length]
+                if gen_output.routed_experts is not None
                 else None
             ),
             multi_modal_data=multi_modal_data,

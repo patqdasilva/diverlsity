@@ -1484,6 +1484,44 @@ class RayPPOTrainer:
                             config=self.config.algorithm,
                         )
 
+                    # Compute VC-BTE (Tsallis escort) omega weights if enabled
+                    omega_alpha = self.config.algorithm.get("omega_escort_alpha", 0.0)
+                    if omega_alpha > 0.0 and "rollout_entropies" in batch.batch:
+                        with marked_timer("omega_escort", timing_raw, color="magenta"):
+                            from verl.trainer.ppo.omega_escort import compute_vc_bte_vectorized
+
+                            omega_block_size = self.config.algorithm.get("omega_escort_block_size", 64)
+                            omega_log_clip = self.config.algorithm.get("omega_escort_log_clip", 3.0)
+
+                            omega_dict = compute_vc_bte_vectorized(
+                                logprobs=batch.batch["rollout_log_probs"],
+                                entropies=batch.batch["rollout_entropies"],
+                                variances=batch.batch["rollout_variances"],
+                                mask=batch.batch["response_mask"],
+                                alpha=omega_alpha,
+                                block_size=omega_block_size,
+                                log_omega_clip=omega_log_clip,
+                            )
+
+                            batch.batch["omega_log_weights"] = omega_dict["omega_log_weights"]
+
+                            # Log omega escort metrics
+                            response_mask = batch.batch["response_mask"].bool()
+                            omega_raw_vals = omega_dict["omega_t_raw"][response_mask]
+                            omega_renorm_vals = omega_dict["omega_t_renorm"][response_mask]
+                            raw_log_omega = omega_dict["raw_log_omega"]
+                            clipped_log_omega = omega_dict["clipped_log_omega"]
+                            clip_frac = (raw_log_omega != clipped_log_omega).float().mean().item()
+
+                            metrics.update({
+                                "omega/mean_raw": omega_raw_vals.mean().item(),
+                                "omega/std_raw": omega_raw_vals.std().item(),
+                                "omega/mean_renorm": omega_renorm_vals.mean().item(),
+                                "omega/std_renorm": omega_renorm_vals.std().item(),
+                                "omega/clip_frac": clip_frac,
+                                "omega/alpha": omega_alpha,
+                            })
+
                     # update critic
                     if self.use_critic:
                         with marked_timer("update_critic", timing_raw, color="pink"):

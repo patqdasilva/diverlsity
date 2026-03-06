@@ -148,6 +148,10 @@ class AgentLoopOutput(BaseModel):
     """Response mask, 1 for LLM generated token, 0 for tool response token."""
     response_logprobs: Optional[list[float]] = None
     """Log probabilities for the response tokens."""
+    response_entropies: Optional[list[float]] = None
+    """Per-token Shannon entropy from vLLM output_exact_entropy."""
+    response_variances: Optional[list[float]] = None
+    """Per-token variance of log-probs from vLLM output_exact_entropy."""
     routed_experts: Optional[Any] = None
     """Routed experts for the total tokens."""
     multi_modal_data: Optional[dict[str, Any]] = None
@@ -181,6 +185,10 @@ class _InternalAgentLoopOutput(AgentLoopOutput):
     """Padded attention mask."""
     response_logprobs: Optional[torch.Tensor] = None
     """Padded log probabilities for the response tokens."""
+    response_entropies: Optional[torch.Tensor] = None
+    """Padded per-token entropies for the response tokens."""
+    response_variances: Optional[torch.Tensor] = None
+    """Padded per-token variances for the response tokens."""
     routed_experts: Optional[torch.Tensor] = None
     """Padded routed experts for the total tokens."""
     multi_modal_inputs: Optional[dict[str, torch.Tensor]] = None
@@ -430,6 +438,15 @@ class AgentLoopWorker:
             logprobs=config.calculate_log_probs,
         )
 
+        # Enable vLLM exact entropy/variance output when omega escort is active
+        algo_config = self.config.get("algorithm", None)
+        omega_escort_active = (
+            algo_config is not None
+            and algo_config.get("omega_escort_alpha", 0.0) > 0.0
+        )
+        if omega_escort_active:
+            sampling_params["output_exact_entropy"] = True
+
         # override sampling params for validation
         if batch.meta_info.get("validate", False):
             sampling_params["top_p"] = config.val_kwargs.top_p
@@ -579,6 +596,16 @@ class AgentLoopWorker:
             pad_size = self.rollout_config.response_length - len(output.response_logprobs)
             response_logprobs = torch.tensor(output.response_logprobs + [0.0] * pad_size).unsqueeze(0)
 
+        response_entropies = None
+        if output.response_entropies is not None:
+            pad_size = self.rollout_config.response_length - len(output.response_entropies)
+            response_entropies = torch.tensor(output.response_entropies + [0.0] * pad_size).unsqueeze(0)
+
+        response_variances = None
+        if output.response_variances is not None:
+            pad_size = self.rollout_config.response_length - len(output.response_variances)
+            response_variances = torch.tensor(output.response_variances + [0.0] * pad_size).unsqueeze(0)
+
         response_mask = response_mask_output["input_ids"] * response_output["attention_mask"]
         attention_mask = torch.cat([prompt_output["attention_mask"], response_output["attention_mask"]], dim=1)
         input_ids = torch.cat([prompt_output["input_ids"], response_output["input_ids"]], dim=1)
@@ -627,6 +654,8 @@ class AgentLoopWorker:
             response_mask=response_mask,
             attention_mask=attention_mask,
             response_logprobs=response_logprobs,
+            response_entropies=response_entropies,
+            response_variances=response_variances,
             routed_experts=routed_experts,
             multi_modal_inputs=multi_modal_inputs,
             multi_modal_data=output.multi_modal_data,
@@ -741,6 +770,10 @@ class AgentLoopWorker:
         optional_outputs = {}
         if inputs[0].response_logprobs is not None:
             optional_outputs["rollout_log_probs"] = torch.cat([input.response_logprobs for input in inputs], dim=0)
+        if inputs[0].response_entropies is not None:
+            optional_outputs["rollout_entropies"] = torch.cat([input.response_entropies for input in inputs], dim=0)
+        if inputs[0].response_variances is not None:
+            optional_outputs["rollout_variances"] = torch.cat([input.response_variances for input in inputs], dim=0)
         if inputs[0].routed_experts is not None:
             optional_outputs["routed_experts"] = torch.cat([input.routed_experts for input in inputs], dim=0)
 

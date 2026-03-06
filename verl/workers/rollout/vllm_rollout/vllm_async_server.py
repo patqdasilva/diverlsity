@@ -541,8 +541,13 @@ class vLLMHttpServer:
             f"max_tokens {max_tokens} exceeds available context space {max_possible_tokens}"
         )
         sampling_params["logprobs"] = 0 if sampling_params.pop("logprobs", False) else None
+        output_exact_entropy = sampling_params.pop("output_exact_entropy", False)
         sampling_params.setdefault("repetition_penalty", self.config.get("repetition_penalty", 1.0))
-        sampling_params = SamplingParams(max_tokens=max_tokens, **sampling_params)
+        sampling_params = SamplingParams(
+            max_tokens=max_tokens,
+            output_exact_entropy=output_exact_entropy,
+            **sampling_params,
+        )
         prompt_ids = _qwen2_5_vl_dedup_image_tokens(prompt_ids, self.model_config.processor)
         multi_modal_data = {}
         if image_data is not None:
@@ -599,9 +604,22 @@ class vLLMHttpServer:
         if hasattr(final_res.outputs[0], "num_preempted"):
             num_preempted = final_res.outputs[0].num_preempted
 
+        # Extract per-token entropy and variance if output_exact_entropy was enabled
+        entropy = None
+        variance = None
+        if output_exact_entropy:
+            raw_entropy = getattr(final_res.outputs[0], "entropy", None)
+            raw_variance = getattr(final_res.outputs[0], "variance", None)
+            if raw_entropy is not None:
+                entropy = [float(e) for e in raw_entropy]
+            if raw_variance is not None:
+                variance = [float(v) for v in raw_variance]
+
         return TokenOutput(
             token_ids=token_ids,
             log_probs=log_probs,
+            entropy=entropy,
+            variance=variance,
             routed_experts=routed_experts,
             stop_reason=stop_reason,
             num_preempted=num_preempted,

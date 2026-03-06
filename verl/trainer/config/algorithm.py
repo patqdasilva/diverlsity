@@ -612,3 +612,9 @@ class AlgoConfig(BaseConfig):
     # Rollout Correction: corrects off-policy issues (policy mismatch, model staleness, distribution shifts)
     # Set to None to disable, use RolloutCorrectionConfig presets (e.g., .tis(), .mis()), or pass dict
     rollout_correction: Optional[RolloutCorrectionConfig] = None
+
+    # Omega Escort (VC-BTE): Tsallis escort deformation via analytic variance-controlled block token escort.
+    # Set omega_escort_alpha > 0 to enable. Requires modified vLLM with output_exact_entropy support.
+    omega_escort_alpha: float = 0.0
+    omega_escort_block_size: int = 64
+    omega_escort_log_clip: float = 3.0
