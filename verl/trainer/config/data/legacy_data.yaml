@@ -129,3 +129,42 @@ datagen:
 
 # Additional kwargs when calling tokenizer.apply_chat_template
 apply_chat_template_kwargs: {}
+
+# Maximum number of archived states retained by stateful custom datasets/samplers.
+archive_max_size: 1000
+
+# PUCT exploration coefficient for state-archive samplers.
+puct_c: 1.0
+
+# Maximum number of retained children per parent in stateful samplers.
+topk_children: 2
+
+# Number of sampled train batches per epoch when using a custom curriculum sampler.
+train_epoch_steps: 1
+
+# Number of initial train states to seed a stateful archive with.
+train_initial_state_count: 32
+
+# Number of initial validation states to seed a held-out archive with.
+val_initial_state_count: 16
+
+# Number of PUCT validation batches to roll out per validation pass.
+validation_puct_steps: 1
+
+# Per-program runtime budget in seconds for train-time code execution tasks.
+train_budget_s: 10
+
+# Per-program runtime budget in seconds for validation-time code execution tasks.
+val_budget_s: 30
+
+# Optional per-task CPU hint for custom code execution rewards and prompts.
+num_cpus_per_task: 1
+
+# Optional task-specific target C5 value for Erdos-style prompts.
+target_c5: 0.38080
+
+# Optional current best-known C5 value for Erdos-style prompts.
+current_record_c5: 0.38092
+
+# Optional maximum construction length for stateful Erdos-style archives.
+max_construction_len: 1000

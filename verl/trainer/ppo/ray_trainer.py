@@ -332,6 +332,9 @@ class RayPPOTrainer:
 
         if train_sampler is None:
             train_sampler = create_rl_sampler(self.config.data, self.train_dataset)
+        val_sampler = None
+        if getattr(self.val_dataset, "use_sampler_for_validation", False):
+            val_sampler = create_rl_sampler(self.config.data, self.val_dataset)
         if collate_fn is None:
             from verl.utils.dataset.rl_dataset import collate_fn as default_collate_fn
 
@@ -356,9 +359,10 @@ class RayPPOTrainer:
             dataset=self.val_dataset,
             batch_size=val_batch_size,
             num_workers=num_workers,
-            shuffle=self.config.data.get("validation_shuffle", True),
+            shuffle=False if val_sampler is not None else self.config.data.get("validation_shuffle", True),
             drop_last=False,
             collate_fn=collate_fn,
+            sampler=val_sampler,
         )
 
         assert len(self.train_dataloader) >= 1, "Train dataloader is empty!"
@@ -499,6 +503,11 @@ class RayPPOTrainer:
         data_source_lst = []
         reward_extra_infos_dict: dict[str, list] = defaultdict(list)
 
+        if hasattr(self.val_dataset, "reset_for_validation"):
+            self.val_dataset.reset_for_validation()
+        elif hasattr(self.val_dataloader, "sampler") and hasattr(self.val_dataloader.sampler, "reset_for_validation"):
+            self.val_dataloader.sampler.reset_for_validation()
+
         # Lists to collect samples for the table
         sample_inputs = []
         sample_outputs = []
@@ -573,6 +582,13 @@ class RayPPOTrainer:
 
             # evaluate using reward_function
             reward_tensor, reward_extra_info = extract_reward(test_batch)
+            if reward_extra_info:
+                test_batch.non_tensor_batch.update(
+                    {
+                        key: values if isinstance(values, np.ndarray) else np.array(values, dtype=object)
+                        for key, values in reward_extra_info.items()
+                    }
+                )
 
             scores = reward_tensor.sum(-1).cpu().tolist()
             sample_scores.extend(scores)
@@ -591,6 +607,14 @@ class RayPPOTrainer:
                 sample_turns.append(test_batch.non_tensor_batch["__num_turns__"])
 
             data_source_lst.append(test_batch.non_tensor_batch.get("data_source", ["unknown"] * reward_tensor.shape[0]))
+
+            if isinstance(self.val_dataloader.sampler, AbstractCurriculumSampler):
+                self.val_dataloader.sampler.update(batch=test_batch)
+            if hasattr(self.val_dataset, "on_batch_end"):
+                try:
+                    self.val_dataset.on_batch_end(batch=test_batch, validate=True)
+                except TypeError:
+                    self.val_dataset.on_batch_end(batch=test_batch)
 
         self._maybe_log_val_generations(inputs=sample_inputs, outputs=sample_outputs, scores=sample_scores)
 
