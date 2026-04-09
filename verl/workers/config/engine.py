@@ -250,10 +250,11 @@ class FSDPEngineConfig(EngineConfig):
     def __post_init__(self):
         super().__post_init__()
         assert self.strategy in ["fsdp", "fsdp2"], f"strategy {self.strategy} not supported"
-        self.entropy_type = self.entropy_type.lower()
+        entropy_type = self.entropy_type.lower()
         valid_entropy_types = ["shannon", "tsallis"]
-        if self.entropy_type not in valid_entropy_types:
+        if entropy_type not in valid_entropy_types:
             raise ValueError(f"Invalid entropy_type: {self.entropy_type}. Must be one of {valid_entropy_types}")
+        object.__setattr__(self, "entropy_type", entropy_type)
         if self.tsallis_q <= 0:
             raise ValueError(f"Invalid tsallis_q: {self.tsallis_q}. Tsallis entropy requires q > 0.")
 

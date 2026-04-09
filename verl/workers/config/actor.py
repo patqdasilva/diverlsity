@@ -213,10 +213,11 @@ class ActorConfig(BaseConfig):
         if self.loss_agg_mode not in valid_loss_agg_modes:
             raise ValueError(f"Invalid loss_agg_mode: {self.loss_agg_mode}")
 
-        self.entropy_type = self.entropy_type.lower()
+        entropy_type = self.entropy_type.lower()
         valid_entropy_types = ["shannon", "tsallis"]
-        if self.entropy_type not in valid_entropy_types:
+        if entropy_type not in valid_entropy_types:
             raise ValueError(f"Invalid entropy_type: {self.entropy_type}. Must be one of {valid_entropy_types}")
+        object.__setattr__(self, "entropy_type", entropy_type)
         if self.tsallis_q <= 0:
             raise ValueError(f"Invalid tsallis_q: {self.tsallis_q}. Tsallis entropy requires q > 0.")
 

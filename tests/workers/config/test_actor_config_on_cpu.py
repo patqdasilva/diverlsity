@@ -216,6 +216,16 @@ class TestActorConfig(unittest.TestCase):
             )
         self.assertIn("You have set both", str(cm.exception))
 
+    def test_entropy_type_is_normalized_without_frozen_field_error(self):
+        """Mixed-case entropy_type should normalize successfully during post-init."""
+        config = FSDPActorConfig(
+            strategy="fsdp",
+            ppo_micro_batch_size_per_gpu=4,
+            rollout_n=1,
+            entropy_type="TsAllis",
+        )
+        self.assertEqual(config.entropy_type, "tsallis")
+
         with self.assertRaises((ValueError, AssertionError)) as cm:
             ActorConfig(
                 strategy="fsdp",

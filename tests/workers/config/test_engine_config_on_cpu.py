@@ -74,3 +74,7 @@ class TestFSDPEngineConfigCPU:
 
         with pytest.raises(ValueError, match="Invalid tsallis_q"):
             FSDPEngineConfig(entropy_type="tsallis", tsallis_q=0.0)
+
+    def test_entropy_type_is_normalized_without_frozen_field_error(self):
+        config = FSDPEngineConfig(entropy_type="TsAllis")
+        assert config.entropy_type == "tsallis"
