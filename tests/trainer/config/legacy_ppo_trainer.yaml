@@ -945,6 +945,15 @@ algorithm:
     # Power used for weight scaling in "pow" method
     weight_pow: 2.0
 
+  # Omega escort strength. Set > 0 to enable VC-BTE escort deformation.
+  omega_escort_alpha: 0.0
+
+  # Block size for VC-BTE block aggregation.
+  omega_escort_block_size: 64
+
+  # Symmetric clipping bound for log omega weights.
+  omega_escort_log_clip: 3.0
+
 # config for the trainer
 trainer:
 
