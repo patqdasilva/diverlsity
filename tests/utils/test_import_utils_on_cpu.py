@@ -13,6 +13,9 @@
 # limitations under the License.
 
 import os
+import sys
+import tempfile
+import textwrap
 
 import pytest
 
@@ -93,5 +96,40 @@ def test_load_extern_object_invalid_module():
             load_extern_object(temp_path, "SomeType")
     finally:
         # Clean up the temporary file
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+
+
+def test_load_extern_object_dataclass_module_with_future_annotations():
+    """Dataclass-based external modules should load successfully on modern Python."""
+    source = textwrap.dedent(
+        """\
+        from __future__ import annotations
+
+        from dataclasses import dataclass
+        from typing import Optional
+
+        @dataclass
+        class FutureAnnotatedRecord:
+            name: str
+            parent: Optional[str] = None
+        """
+    )
+
+    with tempfile.NamedTemporaryFile(suffix=".py", mode="w+", delete=False) as temp_file:
+        temp_file.write(source)
+        temp_path = temp_file.name
+
+    module_name = None
+    try:
+        FutureAnnotatedRecord = load_extern_object(temp_path, "FutureAnnotatedRecord")
+        module_name = FutureAnnotatedRecord.__module__
+        instance = FutureAnnotatedRecord(name="child", parent="root")
+        assert instance.name == "child"
+        assert instance.parent == "root"
+        assert module_name in sys.modules
+    finally:
+        if module_name is not None:
+            sys.modules.pop(module_name, None)
         if os.path.exists(temp_path):
             os.remove(temp_path)

@@ -19,6 +19,7 @@ We assume package availability won't change during runtime.
 import importlib
 import importlib.util
 import os
+import sys
 import warnings
 from functools import cache, wraps
 from typing import Optional
@@ -97,8 +98,8 @@ def load_module(module_path: str, module_name: Optional[str] = None) -> object:
                     - "file://verl/utils/dataset/rl_dataset.py"
                     - "/path/to/verl/utils/dataset/rl_dataset.py"
         module_name (str, optional):
-            The name of the module to added to ``sys.modules``. If not provided, the module will not be added,
-                thus will not be cached and directly ``import``able.
+            The name of the module to add to ``sys.modules``. If not provided, a stable generated name is used
+                for file-backed modules so Python can resolve module metadata during execution.
     """
     if not module_path:
         return None
@@ -121,20 +122,21 @@ def load_module(module_path: str, module_name: Optional[str] = None) -> object:
             raise ImportError(f"Could not load module from {module_path=}")
 
         module = importlib.util.module_from_spec(spec)
+        existing_module = sys.modules.get(spec_name)
+        if module_name is not None and existing_module is not None and existing_module is not module:
+            raise RuntimeError(f"Module name '{module_name}' already in `sys.modules` and points to a different module.")
+
+        # Register the module before execution so decorators like @dataclass can resolve
+        # cls.__module__ via sys.modules on Python 3.12+.
+        sys.modules[spec_name] = module
         try:
             spec.loader.exec_module(module)
         except Exception as e:
+            if existing_module is None:
+                sys.modules.pop(spec_name, None)
+            else:
+                sys.modules[spec_name] = existing_module
             raise RuntimeError(f"Error loading module from {module_path=}") from e
-
-        if module_name is not None:
-            import sys
-
-            # Avoid overwriting an existing module with a different object.
-            if module_name in sys.modules and sys.modules[module_name] is not module:
-                raise RuntimeError(
-                    f"Module name '{module_name}' already in `sys.modules` and points to a different module."
-                )
-            sys.modules[module_name] = module
 
     return module
 
