@@ -15,17 +15,25 @@
 import logging
 import os
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Any, Optional
 
 from verl.base_config import BaseConfig
 from verl.trainer.config.config import ModuleConfig
 
 from .rollout import RolloutConfig
 
-__all__ = ["SandboxFusionConfig", "RewardConfig", "RewardModelConfig"]
+__all__ = ["RewardFunctionConfig", "SandboxFusionConfig", "RewardConfig", "RewardModelConfig"]
 
 logger = logging.getLogger(__name__)
 logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "WARN"))
+
+
+@dataclass
+class RewardFunctionConfig(ModuleConfig):
+    """Configuration for a custom reward function."""
+
+    name: Optional[str] = "compute_score"
+    reward_kwargs: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -96,6 +104,8 @@ class RewardConfig(BaseConfig):
 
     # reward manager args
     num_workers: int = 8
+    custom_reward_function: RewardFunctionConfig = field(default_factory=RewardFunctionConfig)
+    reward_kwargs: dict[str, Any] = field(default_factory=dict)
     reward_manager: RewardManagerConfig = field(default_factory=RewardManagerConfig)
 
     # reward model args

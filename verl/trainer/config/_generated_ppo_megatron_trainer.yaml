@@ -627,6 +627,8 @@ reward:
   custom_reward_function:
     path: null
     name: compute_score
+    reward_kwargs: {}
+  reward_kwargs: {}
   reward_manager:
     _target_: verl.workers.config.reward_model.RewardManagerConfig
     source: register
