@@ -25,6 +25,8 @@ def compute_vc_bte_vectorized(
 
     Computes per-token escort weights omega_t from exact per-token entropy
     and variance, using block-level aggregation and batch renormalization.
+    Positive alpha upweights blocks that are rarer than the model's local
+    entropy baseline.
 
     Args:
         logprobs:      [B, T] log-probabilities of taken actions
@@ -75,8 +77,10 @@ def compute_vc_bte_vectorized(
     # 4. Block variance: Sigma^2_B = sum(sigma^2_t) / M
     block_sigma_sq = vars_blocks.sum(dim=-1) / valid_tokens_per_block.clamp(min=1.0)
 
-    # 5. Escort weight: log omega_B = alpha * S_B - 0.5 * alpha^2 * Sigma^2_B
-    raw_log_omega = (alpha * block_S) - (0.5 * (alpha ** 2) * block_sigma_sq)
+    # 5. Escort weight: log omega_B = -alpha * S_B - 0.5 * alpha^2 * Sigma^2_B
+    # With Z_tilde = log p(a_t | h_t) + H_t, rarer-than-expected blocks have
+    # negative S_B and should receive larger weights when alpha > 0.
+    raw_log_omega = (-alpha * block_S) - (0.5 * (alpha ** 2) * block_sigma_sq)
 
     # Clip and exponentiate
     clip_c = abs(float(log_omega_clip))

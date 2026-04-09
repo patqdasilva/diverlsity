@@ -155,6 +155,8 @@ def forward_micro_batch_with_prefix_grouper(
     device_name: str,
     param_dtype,
     use_chunking_entropy: bool = False,
+    entropy_type: str = "shannon",
+    tsallis_q: float = 2.0,
 ):
     """
     Forward pass using PrefixGrouper for shared-prefix optimization.
@@ -167,18 +169,21 @@ def forward_micro_batch_with_prefix_grouper(
         device_name: Device name for autocast.
         param_dtype: Parameter dtype for autocast.
         use_chunking_entropy: Whether to use chunking entropy function.
+        entropy_type: Entropy type for actor regularization.
+        tsallis_q: Tsallis entropy order when entropy_type is "tsallis".
 
     Returns:
-        tuple: (entropy, log_probs) where entropy may be None if not calculated.
+        dict: contains log_probs and, when requested, entropys.
     """
     import verl.utils.torch_functional as verl_F
 
     entropy_fn = None
     if calculate_entropy:
-        if use_chunking_entropy:
-            entropy_fn = verl_F.entropy_from_logits_with_chunking
-        else:
-            entropy_fn = verl_F.entropy_from_logits
+        entropy_fn = verl_F.get_entropy_from_logits_fn(
+            entropy_type=entropy_type,
+            tsallis_q=tsallis_q,
+            use_chunking=use_chunking_entropy,
+        )
 
     pad_token_id = micro_batch.get("pad_token_id", 0)
 
@@ -232,4 +237,7 @@ def forward_micro_batch_with_prefix_grouper(
             full_entropy[:, :current_len] = entropy
             entropy = full_entropy
 
-    return entropy, log_probs
+    outputs = {"log_probs": log_probs}
+    if entropy is not None:
+        outputs["entropys"] = entropy
+    return outputs

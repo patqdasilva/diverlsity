@@ -66,6 +66,45 @@ from verl.workers.config import FSDPEngineConfig
 from verl.workers.utils.padding import left_right_2_no_padding, no_padding_2_padding
 
 
+_FSDP_STRATEGIES = {"fsdp", "fsdp2"}
+
+
+def _is_tsallis_entropy_requested(actor_config) -> bool:
+    return actor_config.get("entropy_type", "shannon").lower() == "tsallis"
+
+
+def _is_tsallis_entropy_active(actor_config) -> bool:
+    return _is_tsallis_entropy_requested(actor_config) and actor_config.get("entropy_coeff", 0.0) != 0.0
+
+
+def validate_geometry_feature_config(config) -> None:
+    actor_config = config.actor_rollout_ref.actor
+    rollout_config = config.actor_rollout_ref.rollout
+    omega_alpha = config.algorithm.get("omega_escort_alpha", 0.0)
+    omega_active = omega_alpha > 0.0
+    tsallis_active = _is_tsallis_entropy_active(actor_config)
+    actor_strategy = actor_config.strategy
+
+    if (omega_active or tsallis_active) and actor_strategy not in _FSDP_STRATEGIES:
+        raise ValueError(
+            "Omega escort and Tsallis actor entropy are only implemented for FSDP/FSDP2 in this pass. "
+            f"Got actor strategy {actor_strategy!r}."
+        )
+
+    if omega_active and rollout_config.name != "vllm":
+        raise ValueError(
+            "Omega escort requires actor_rollout_ref.rollout.name=vllm with modified vLLM "
+            "output_exact_entropy support."
+        )
+
+    use_fused_kernels = actor_config.get(
+        "use_fused_kernels",
+        config.actor_rollout_ref.model.get("use_fused_kernels", False),
+    )
+    if tsallis_active and use_fused_kernels:
+        raise ValueError("Tsallis entropy regularization is not supported when use_fused_kernels=True.")
+
+
 def apply_kl_penalty(data: DataProto, kl_ctrl: core_algos.AdaptiveKLController, kl_penalty="kl"):
     """Apply KL penalty to the token-level rewards.
 
@@ -264,6 +303,7 @@ class RayPPOTrainer:
         self.tokenizer = tokenizer
         self.processor = processor
         self.config = config
+        validate_geometry_feature_config(self.config)
 
         self.hybrid_engine = config.actor_rollout_ref.hybrid_engine
         assert self.hybrid_engine, "Currently, only support hybrid engine"
@@ -1430,6 +1470,8 @@ class RayPPOTrainer:
                                 "actor/entropy": entropy_agg.detach().item(),
                                 "perf/mfu/actor_infer": old_log_prob_mfu,
                             }
+                            if _is_tsallis_entropy_active(actor_config):
+                                old_log_prob_metrics["actor/tsallis_q"] = actor_config.tsallis_q
                             metrics.update(old_log_prob_metrics)
                             old_log_prob.batch.pop("entropys")
                             if "routed_experts" in batch.batch and "routed_experts" in old_log_prob.batch:
@@ -1510,7 +1552,15 @@ class RayPPOTrainer:
 
                     # Compute VC-BTE (Tsallis escort) omega weights if enabled
                     omega_alpha = self.config.algorithm.get("omega_escort_alpha", 0.0)
-                    if omega_alpha > 0.0 and "rollout_entropies" in batch.batch:
+                    if omega_alpha > 0.0:
+                        required_omega_keys = ["rollout_log_probs", "rollout_entropies", "rollout_variances"]
+                        missing_omega_keys = [key for key in required_omega_keys if key not in batch.batch]
+                        if missing_omega_keys:
+                            raise RuntimeError(
+                                "Omega escort is enabled, but rollout did not return the required tensors "
+                                f"{missing_omega_keys}. This requires modified vLLM with "
+                                "`output_exact_entropy` support."
+                            )
                         with marked_timer("omega_escort", timing_raw, color="magenta"):
                             from verl.trainer.ppo.omega_escort import compute_vc_bte_vectorized
 

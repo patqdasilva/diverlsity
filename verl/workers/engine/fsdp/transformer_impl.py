@@ -139,10 +139,16 @@ class FSDPEngine(BaseEngine):
         if self._qat_enabled:
             logger.info(f"QAT enabled: mode={self._qat_config.mode}, group_size={self._qat_config.group_size}")
 
-        if self.engine_config.entropy_from_logits_with_chunking:
-            entropy_from_logits = verl_F.entropy_from_logits_with_chunking
-        else:
-            entropy_from_logits = verl_F.entropy_from_logits
+        self.entropy_type = getattr(self.engine_config, "entropy_type", "shannon")
+        self.tsallis_q = float(getattr(self.engine_config, "tsallis_q", 2.0))
+        if self.entropy_type == "tsallis" and self.model_config.use_fused_kernels:
+            raise ValueError("Tsallis entropy regularization is not supported when use_fused_kernels=True.")
+
+        entropy_from_logits = verl_F.get_entropy_from_logits_fn(
+            entropy_type=self.entropy_type,
+            tsallis_q=self.tsallis_q,
+            use_chunking=self.engine_config.entropy_from_logits_with_chunking,
+        )
 
         self.compute_entropy_from_logits = (
             torch.compile(entropy_from_logits, dynamic=True)
@@ -1066,9 +1072,9 @@ class FSDPEngineWithLMHead(FSDPEngine):
 
                 if calculate_entropy:
                     if not self.engine_config.entropy_checkpointing:
-                        entropy = verl_F.entropy_from_logits(logits)
+                        entropy = self.compute_entropy_from_logits(logits)
                     else:
-                        entropy = torch.utils.checkpoint.checkpoint(verl_F.entropy_from_logits, logits)
+                        entropy = torch.utils.checkpoint.checkpoint(self.compute_entropy_from_logits, logits)
 
                 if pad_mode == DatasetPadMode.NO_PADDING:
                     cu_seqlens = input_ids.offsets()

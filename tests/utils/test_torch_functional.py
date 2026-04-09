@@ -19,12 +19,16 @@ import torch
 import torch.distributed as dist
 import torch.multiprocessing as mp
 
+from verl.trainer.ppo.omega_escort import compute_vc_bte_vectorized
 from verl.utils.device import get_device_name, get_nccl_backend, get_torch_device
 from verl.utils.torch_functional import (
     distributed_masked_mean,
     distributed_mean_max_min_std,
+    entropy_from_logits,
     expand_as_nested,
     masked_mean,
+    tsallis_entropy_from_logits,
+    tsallis_entropy_from_logits_with_chunking,
 )
 
 
@@ -150,3 +154,106 @@ def test_expand_as_nested():
 
     with pytest.raises(AssertionError):
         expand_as_nested(tensor, nested_tensor.unsqueeze(-1))
+
+
+def test_tsallis_entropy_from_logits_matches_closed_form():
+    logits = torch.log(torch.tensor([[3.0, 1.0], [1.0, 1.0]], dtype=torch.float32))
+
+    entropy = tsallis_entropy_from_logits(logits, q=2.0)
+    expected = torch.tensor([0.375, 0.5], dtype=torch.float32)
+
+    assert torch.allclose(entropy, expected, atol=1e-6)
+
+
+def test_tsallis_entropy_from_logits_with_chunking_matches_non_chunked():
+    torch.manual_seed(0)
+    logits = torch.randn(17, 13, dtype=torch.float32)
+
+    entropy = tsallis_entropy_from_logits(logits, q=2.0)
+    entropy_chunked = tsallis_entropy_from_logits_with_chunking(logits, q=2.0, chunk_size=4)
+
+    assert torch.allclose(entropy_chunked, entropy, atol=1e-6)
+
+
+def test_tsallis_entropy_from_logits_falls_back_to_shannon_near_q_one():
+    torch.manual_seed(0)
+    logits = torch.randn(5, 7, dtype=torch.float32)
+
+    shannon_entropy = entropy_from_logits(logits)
+    near_limit_entropy = tsallis_entropy_from_logits(logits, q=1.0 + 1e-6)
+    exact_limit_entropy = tsallis_entropy_from_logits(logits, q=1.0)
+
+    assert torch.allclose(near_limit_entropy, shannon_entropy, atol=1e-6)
+    assert torch.allclose(exact_limit_entropy, shannon_entropy, atol=1e-6)
+
+
+def test_vc_bte_positive_alpha_upweights_rarer_blocks():
+    logprobs = torch.tensor([[-3.0, -3.0], [-0.2, -0.2]], dtype=torch.float32)
+    entropies = torch.tensor([[1.0, 1.0], [0.2, 0.2]], dtype=torch.float32)
+    variances = torch.zeros_like(logprobs)
+    mask = torch.ones_like(logprobs, dtype=torch.bool)
+
+    omega = compute_vc_bte_vectorized(
+        logprobs=logprobs,
+        entropies=entropies,
+        variances=variances,
+        mask=mask,
+        alpha=1.0,
+        block_size=2,
+        log_omega_clip=10.0,
+    )
+
+    assert omega["raw_log_omega"][0, 0] > omega["raw_log_omega"][1, 0]
+    assert torch.all(omega["omega_t_renorm"][0] > 1.0)
+    assert torch.all(omega["omega_t_renorm"][1] < 1.0)
+
+
+def test_vc_bte_batch_renorm_has_mean_one_per_timestep():
+    torch.manual_seed(0)
+    logprobs = torch.randn(3, 5, dtype=torch.float32)
+    entropies = torch.rand(3, 5, dtype=torch.float32)
+    variances = torch.rand(3, 5, dtype=torch.float32)
+    mask = torch.tensor(
+        [
+            [1, 1, 1, 1, 1],
+            [1, 1, 1, 0, 0],
+            [1, 1, 0, 0, 0],
+        ],
+        dtype=torch.bool,
+    )
+
+    omega = compute_vc_bte_vectorized(
+        logprobs=logprobs,
+        entropies=entropies,
+        variances=variances,
+        mask=mask,
+        alpha=0.7,
+        block_size=2,
+        log_omega_clip=10.0,
+    )
+
+    mask_float = mask.float()
+    per_timestep_mean = (omega["omega_t_renorm"] * mask_float).sum(dim=0) / mask_float.sum(dim=0).clamp(min=1.0)
+    valid_timesteps = mask.any(dim=0)
+    assert torch.allclose(per_timestep_mean[valid_timesteps], torch.ones_like(per_timestep_mean[valid_timesteps]))
+
+
+def test_vc_bte_clips_large_log_weights():
+    logprobs = torch.tensor([[-10.0, -10.0], [-0.1, -0.1]], dtype=torch.float32)
+    entropies = torch.zeros_like(logprobs)
+    variances = torch.zeros_like(logprobs)
+    mask = torch.ones_like(logprobs, dtype=torch.bool)
+
+    omega = compute_vc_bte_vectorized(
+        logprobs=logprobs,
+        entropies=entropies,
+        variances=variances,
+        mask=mask,
+        alpha=1.0,
+        block_size=2,
+        log_omega_clip=0.5,
+    )
+
+    assert omega["raw_log_omega"][0, 0] > 0.5
+    assert torch.all(omega["clipped_log_omega"] <= 0.5)
+    assert torch.all(omega["clipped_log_omega"] >= -0.5)

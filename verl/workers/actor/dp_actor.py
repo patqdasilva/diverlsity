@@ -78,10 +78,17 @@ class DataParallelPPOActor(BasePPOActor):
         if torch.distributed.get_rank() == 0:
             print(f"{role} use_prefix_grouper={self.use_prefix_grouper}")
 
-        if self.config.entropy_from_logits_with_chunking:
-            entropy_from_logits = verl_F.entropy_from_logits_with_chunking
-        else:
-            entropy_from_logits = verl_F.entropy_from_logits
+        configured_entropy_type = self.config.get("entropy_type", "shannon")
+        self.entropy_type = configured_entropy_type if self.config.entropy_coeff != 0 else "shannon"
+        self.tsallis_q = float(self.config.get("tsallis_q", 2.0))
+        if self.entropy_type == "tsallis" and self.use_fused_kernels:
+            raise ValueError("Tsallis entropy regularization is not supported when use_fused_kernels=True.")
+
+        entropy_from_logits = verl_F.get_entropy_from_logits_fn(
+            entropy_type=self.entropy_type,
+            tsallis_q=self.tsallis_q,
+            use_chunking=self.config.entropy_from_logits_with_chunking,
+        )
 
         self.compute_entropy_from_logits = (
             torch.compile(entropy_from_logits, dynamic=True)
@@ -143,6 +150,8 @@ class DataParallelPPOActor(BasePPOActor):
                     device_name=self.device_name,
                     param_dtype=self.param_dtype,
                     use_chunking_entropy=self.config.get("entropy_from_logits_with_chunking", False),
+                    entropy_type=self.entropy_type,
+                    tsallis_q=self.tsallis_q,
                 )
 
         response_length = micro_batch["responses"].size(-1)
@@ -370,9 +379,9 @@ class DataParallelPPOActor(BasePPOActor):
                     log_probs = logprobs_from_logits(logits, micro_batch["responses"])
                     if calculate_entropy:
                         if not self.config.entropy_checkpointing:
-                            entropy = verl_F.entropy_from_logits(logits)  # (bsz, response_length)
+                            entropy = self.compute_entropy_from_logits(logits)  # (bsz, response_length)
                         else:
-                            entropy = torch.utils.checkpoint.checkpoint(verl_F.entropy_from_logits, logits)
+                            entropy = torch.utils.checkpoint.checkpoint(self.compute_entropy_from_logits, logits)
                     # Compute sum_pi_squared if requested (for optimal_token_baseline)
                     if calculate_sum_pi_squared:
                         sum_pi_squared = (
@@ -533,6 +542,8 @@ class DataParallelPPOActor(BasePPOActor):
         # Include rollout_log_probs for computing rollout_corr metrics in bypass mode
         if "rollout_log_probs" in data.batch.keys():
             select_keys.append("rollout_log_probs")
+        if "omega_log_weights" in data.batch.keys():
+            select_keys.append("omega_log_weights")
 
         has_multi_modal_inputs = "multi_modal_inputs" in data.non_tensor_batch.keys()
         non_tensor_select_keys = []
@@ -588,15 +599,20 @@ class DataParallelPPOActor(BasePPOActor):
                     outputs = self._forward_micro_batch(
                         model_inputs, temperature=temperature, calculate_entropy=calculate_entropy
                     )
-                    log_prob = outputs["log_probs"]
+                    raw_log_prob = outputs["log_probs"]
+                    log_prob = raw_log_prob
                     entropy = outputs["entropys"] if calculate_entropy else None
+
+                    omega_log_weights = model_inputs.get("omega_log_weights", None)
+                    if omega_log_weights is not None:
+                        log_prob = log_prob + omega_log_weights
 
                     # for fully_async_policy
                     if hasattr(self.config, "use_rollout_log_probs") and self.config.use_rollout_log_probs:
                         old_log_prob = model_inputs["old_log_probs"]
                     else:
                         if on_policy:
-                            old_log_prob = log_prob.detach()
+                            old_log_prob = raw_log_prob.detach()
                         else:
                             old_log_prob = model_inputs["old_log_probs"]
 
@@ -641,6 +657,8 @@ class DataParallelPPOActor(BasePPOActor):
                     if calculate_entropy and entropy is not None:
                         entropy_agg = agg_loss(loss_mat=entropy, loss_mask=response_mask, loss_agg_mode=loss_agg_mode)
                         micro_batch_metrics["actor/entropy"] = entropy_agg.detach().item()
+                        if self.entropy_type == "tsallis" and entropy_coeff != 0:
+                            micro_batch_metrics["actor/tsallis_q"] = self.tsallis_q
                         if entropy_coeff != 0:
                             policy_loss -= entropy_agg * entropy_coeff
 

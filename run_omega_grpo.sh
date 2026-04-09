@@ -4,6 +4,14 @@
 # ============================================================================
 # Usage: bash run_omega_grpo.sh [optional hydra overrides...]
 #
+# Recipes:
+#   Omega only:
+#     keep algorithm.omega_escort_alpha>0 and actor_rollout_ref.actor.entropy_coeff=0
+#   Tsallis only:
+#     set algorithm.omega_escort_alpha=0 actor_rollout_ref.actor.entropy_type=tsallis actor_rollout_ref.actor.entropy_coeff>0
+#   Omega + Tsallis:
+#     keep algorithm.omega_escort_alpha>0 and set actor_rollout_ref.actor.entropy_type=tsallis actor_rollout_ref.actor.entropy_coeff>0
+#
 # Prereqs:
 #   - SLURM interactive session with 2 H100 GPUs
 #   - Modified vLLM (with output_exact_entropy) installed

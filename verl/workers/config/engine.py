@@ -240,6 +240,8 @@ class FSDPEngineConfig(EngineConfig):
     mixed_precision: Optional[dict[str, Any]] = None
     ulysses_sequence_parallel_size: int = 1
     entropy_from_logits_with_chunking: bool = False
+    entropy_type: str = "shannon"
+    tsallis_q: float = 2.0
     use_torch_compile: bool = True
     entropy_checkpointing: bool = False
     strategy: str = "fsdp"
@@ -248,6 +250,12 @@ class FSDPEngineConfig(EngineConfig):
     def __post_init__(self):
         super().__post_init__()
         assert self.strategy in ["fsdp", "fsdp2"], f"strategy {self.strategy} not supported"
+        self.entropy_type = self.entropy_type.lower()
+        valid_entropy_types = ["shannon", "tsallis"]
+        if self.entropy_type not in valid_entropy_types:
+            raise ValueError(f"Invalid entropy_type: {self.entropy_type}. Must be one of {valid_entropy_types}")
+        if self.tsallis_q <= 0:
+            raise ValueError(f"Invalid tsallis_q: {self.tsallis_q}. Tsallis entropy requires q > 0.")
 
 
 @dataclass

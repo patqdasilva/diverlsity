@@ -104,6 +104,28 @@ class TestDataParallelPPOActor(unittest.TestCase):
             config=self.config, actor_module=self.mock_model, actor_optimizer=self.mock_optimizer
         )
 
+    def _build_actor(self, *, entropy_coeff=None, entropy_type=None, tsallis_q=None):
+        config = FSDPActorConfig(
+            strategy="fsdp2",
+            ppo_mini_batch_size=4,
+            ppo_micro_batch_size_per_gpu=2,
+            ppo_epochs=1,
+            clip_ratio=0.2,
+            entropy_coeff=self.config.entropy_coeff if entropy_coeff is None else entropy_coeff,
+            entropy_type=self.config.entropy_type if entropy_type is None else entropy_type,
+            tsallis_q=self.config.tsallis_q if tsallis_q is None else tsallis_q,
+            grad_clip=1.0,
+            use_dynamic_bsz=False,
+            use_torch_compile=False,
+            ulysses_sequence_parallel_size=1,
+            optim=OptimizerConfig(lr=1e-6),
+            rollout_n=1,
+        )
+        model = MockTransformerModel(vocab_size=1000, hidden_size=64).to(self.device)
+        model.load_state_dict(self.mock_model.state_dict())
+        optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
+        return DataParallelPPOActor(config=config, actor_module=model, actor_optimizer=optimizer)
+
     @classmethod
     def tearDownClass(cls):
         """Clean up distributed environment"""
@@ -137,7 +159,7 @@ class TestDataParallelPPOActor(unittest.TestCase):
 
         return DataProto(batch=tensor_dict, meta_info=meta_info)
 
-    def _create_test_data_for_update_policy(self):
+    def _create_test_data_for_update_policy(self, *, omega_log_weights=None, advantages=None, old_log_probs=None):
         """Create test DataProto for update_policy method"""
         batch_size = 4  # Must match ppo_mini_batch_size
         prompt_length = 8
@@ -150,21 +172,24 @@ class TestDataParallelPPOActor(unittest.TestCase):
         position_ids = torch.arange(total_length).unsqueeze(0).expand(batch_size, -1).to(self.device)
         responses = input_ids[:, -response_length:]
         response_mask = torch.ones(batch_size, response_length).to(self.device)
-        old_log_probs = torch.randn(batch_size, response_length).to(self.device) * 0.1  # Small values
-        advantages = torch.randn(batch_size, response_length).to(self.device) * 0.5
+        if old_log_probs is None:
+            old_log_probs = torch.randn(batch_size, response_length).to(self.device) * 0.1  # Small values
+        if advantages is None:
+            advantages = torch.randn(batch_size, response_length).to(self.device) * 0.5
 
-        tensor_dict = TensorDict(
-            {
-                "input_ids": input_ids,
-                "attention_mask": attention_mask,
-                "position_ids": position_ids,
-                "responses": responses,
-                "response_mask": response_mask,
-                "old_log_probs": old_log_probs,
-                "advantages": advantages,
-            },
-            batch_size=[batch_size],
-        )
+        tensor_data = {
+            "input_ids": input_ids,
+            "attention_mask": attention_mask,
+            "position_ids": position_ids,
+            "responses": responses,
+            "response_mask": response_mask,
+            "old_log_probs": old_log_probs,
+            "advantages": advantages,
+        }
+        if omega_log_weights is not None:
+            tensor_data["omega_log_weights"] = omega_log_weights
+
+        tensor_dict = TensorDict(tensor_data, batch_size=[batch_size])
 
         meta_info = {"temperature": 1.0}
 
@@ -206,6 +231,40 @@ class TestDataParallelPPOActor(unittest.TestCase):
         self.assertTrue(torch.all(torch.isfinite(log_probs)))
         self.assertIsNone(entropys)
 
+    def test_compute_log_prob_with_tsallis_entropy(self):
+        """Test Tsallis entropy differs from Shannon while staying finite and non-negative."""
+        tsallis_config = FSDPActorConfig(
+            strategy="fsdp2",
+            ppo_mini_batch_size=4,
+            ppo_micro_batch_size_per_gpu=2,
+            ppo_epochs=1,
+            clip_ratio=0.2,
+            entropy_coeff=0.01,
+            entropy_type="tsallis",
+            tsallis_q=2.0,
+            grad_clip=1.0,
+            use_dynamic_bsz=False,
+            use_torch_compile=False,
+            ulysses_sequence_parallel_size=1,
+            optim=OptimizerConfig(lr=1e-6),
+            rollout_n=1,
+        )
+        tsallis_actor = DataParallelPPOActor(config=tsallis_config, actor_module=self.mock_model, actor_optimizer=None)
+
+        data = self._create_test_data_for_compute_log_prob()
+
+        shannon_outputs = self.actor.compute_log_prob(data, calculate_entropy=True)
+        tsallis_outputs = tsallis_actor.compute_log_prob(data, calculate_entropy=True)
+
+        shannon_entropy = shannon_outputs["entropys"]
+        tsallis_entropy = tsallis_outputs["entropys"]
+
+        self.assertEqual(tsallis_entropy.shape, shannon_entropy.shape)
+        self.assertTrue(torch.all(torch.isfinite(tsallis_entropy)))
+        self.assertTrue(torch.all(tsallis_entropy >= 0))
+        self.assertTrue(torch.allclose(tsallis_outputs["log_probs"], shannon_outputs["log_probs"]))
+        self.assertFalse(torch.allclose(tsallis_entropy, shannon_entropy))
+
     def test_update_policy(self):
         """Test update_policy method"""
         data = self._create_test_data_for_update_policy()
@@ -224,11 +283,40 @@ class TestDataParallelPPOActor(unittest.TestCase):
 
         for key in expected_metric_keys:
             self.assertIn(key, metrics)
-            if isinstance(metrics[key], list):
-                self.assertTrue(all(torch.isfinite(torch.tensor(v)) for v in metrics[key]))
-            else:
-                self.assertIsInstance(metrics[key], (float, int))
-                self.assertTrue(torch.isfinite(torch.tensor(metrics[key])))
+
+    def test_update_policy_consumes_omega_log_weights(self):
+        baseline_actor = self._build_actor(entropy_coeff=0.0)
+        omega_actor = self._build_actor(entropy_coeff=0.0)
+
+        advantages = torch.ones(4, 4, device=self.device)
+        old_log_probs = torch.zeros(4, 4, device=self.device)
+        baseline_data = self._create_test_data_for_update_policy(advantages=advantages, old_log_probs=old_log_probs)
+        omega_data = self._create_test_data_for_update_policy(
+            advantages=advantages,
+            old_log_probs=old_log_probs,
+            omega_log_weights=torch.full((4, 4), 0.35, device=self.device),
+        )
+
+        baseline_metrics = baseline_actor.update_policy(baseline_data)
+        omega_metrics = omega_actor.update_policy(omega_data)
+
+        self.assertNotEqual(baseline_metrics["actor/pg_loss"], omega_metrics["actor/pg_loss"])
+
+    def test_update_policy_combined_omega_and_tsallis(self):
+        combined_actor = self._build_actor(entropy_coeff=0.01, entropy_type="tsallis", tsallis_q=2.0)
+        advantages = torch.ones(4, 4, device=self.device)
+        old_log_probs = torch.zeros(4, 4, device=self.device)
+        combined_data = self._create_test_data_for_update_policy(
+            advantages=advantages,
+            old_log_probs=old_log_probs,
+            omega_log_weights=torch.full((4, 4), 0.25, device=self.device),
+        )
+
+        metrics = combined_actor.update_policy(combined_data)
+
+        self.assertIn("actor/entropy", metrics)
+        self.assertIn("actor/tsallis_q", metrics)
+        self.assertEqual(metrics["actor/tsallis_q"][0], 2.0)
 
     def test_dataparallelppoactor_initialization(self):
         """Test DataParallelPPOActor initialization"""

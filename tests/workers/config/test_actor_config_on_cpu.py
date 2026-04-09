@@ -74,6 +74,8 @@ class TestActorConfig(unittest.TestCase):
 
         self.assertIsInstance(config, ActorConfig)
         self.assertEqual(config.strategy, "fsdp")
+        self.assertEqual(config.entropy_type, "shannon")
+        self.assertEqual(config.tsallis_q, 2.0)
 
     def test_fsdp_actor_config_from_yaml(self):
         """Test creating FSDPActorConfig from YAML file."""
@@ -181,6 +183,27 @@ class TestActorConfig(unittest.TestCase):
                 rollout_n=1,
             )
         self.assertIn("Invalid loss_agg_mode", str(cm.exception))
+
+        with self.assertRaises((ValueError, AssertionError)) as cm:
+            ActorConfig(
+                strategy="fsdp",
+                entropy_type="invalid",
+                use_dynamic_bsz=True,
+                optim=optim,
+                rollout_n=1,
+            )
+        self.assertIn("Invalid entropy_type", str(cm.exception))
+
+        with self.assertRaises((ValueError, AssertionError)) as cm:
+            ActorConfig(
+                strategy="fsdp",
+                entropy_type="tsallis",
+                tsallis_q=0.0,
+                use_dynamic_bsz=True,
+                optim=optim,
+                rollout_n=1,
+            )
+        self.assertIn("Invalid tsallis_q", str(cm.exception))
 
         with self.assertRaises((ValueError, AssertionError)) as cm:
             ActorConfig(

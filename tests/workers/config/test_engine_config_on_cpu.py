@@ -51,6 +51,8 @@ class TestFSDPEngineConfigCPU:
         assert config.param_offload is False
         assert config.optimizer_offload is False
         assert config.fsdp_size == -1
+        assert config.entropy_type == "shannon"
+        assert config.tsallis_q == 2.0
 
     @pytest.mark.parametrize(
         "offload_params",
@@ -65,3 +67,10 @@ class TestFSDPEngineConfigCPU:
         test_policy = {"layer_class": "TransformerBlock"}
         config = FSDPEngineConfig(wrap_policy=test_policy)
         assert config.wrap_policy == test_policy
+
+    def test_entropy_validation(self):
+        with pytest.raises(ValueError, match="Invalid entropy_type"):
+            FSDPEngineConfig(entropy_type="invalid")
+
+        with pytest.raises(ValueError, match="Invalid tsallis_q"):
+            FSDPEngineConfig(entropy_type="tsallis", tsallis_q=0.0)

@@ -238,6 +238,31 @@ def entropy_from_logits(logits: torch.Tensor) -> torch.Tensor:
     return entropy
 
 
+def tsallis_entropy_from_logits(logits: torch.Tensor, q: float = 2.0, shannon_tol: float = 1e-5) -> torch.Tensor:
+    """Calculate Tsallis-q entropy from unnormalized logits.
+
+    Computes H_q(p) = (1 - sum(p_i^q)) / (q - 1). When q is very close to 1,
+    this falls back to Shannon entropy for numerical stability.
+
+    Args:
+        logits: Unnormalized log-probabilities of shape (..., vocab_size).
+        q: Tsallis entropy order.
+        shannon_tol: Absolute tolerance for treating q as the Shannon limit.
+
+    Returns:
+        torch.Tensor: Entropy values with shape (...,), one per distribution.
+    """
+    if q <= 0:
+        raise ValueError(f"Tsallis entropy requires q > 0, got {q}.")
+    if math.isclose(float(q), 1.0, rel_tol=0.0, abs_tol=shannon_tol):
+        return entropy_from_logits(logits)
+
+    log_probs = F.log_softmax(logits.float(), dim=-1)
+    sum_prob_powers = torch.exp(log_probs * q).sum(dim=-1)
+    entropy = (1.0 - sum_prob_powers) / (q - 1.0)
+    return entropy.to(logits.dtype)
+
+
 def entropy_from_logits_with_chunking(logits: torch.Tensor, chunk_size: int = 2048) -> torch.Tensor:
     """Memory-efficient entropy calculation using chunked processing.
 
@@ -261,6 +286,57 @@ def entropy_from_logits_with_chunking(logits: torch.Tensor, chunk_size: int = 20
         entropy_chunk = torch.logsumexp(logits_chunk, dim=-1) - torch.sum(pd_chunk * logits_chunk, dim=-1)
         entropy[i : i + chunk_size] = entropy_chunk
     return entropy
+
+
+def tsallis_entropy_from_logits_with_chunking(
+    logits: torch.Tensor,
+    q: float = 2.0,
+    chunk_size: int = 2048,
+    shannon_tol: float = 1e-5,
+) -> torch.Tensor:
+    """Memory-efficient Tsallis-q entropy calculation using chunked processing.
+
+    Args:
+        logits: Unnormalized log-probabilities of shape (..., vocab_size).
+        q: Tsallis entropy order.
+        chunk_size: Number of samples to process at once. Defaults to 2048.
+        shannon_tol: Absolute tolerance for treating q as the Shannon limit.
+
+    Returns:
+        torch.Tensor: Entropy values with shape logits.shape[:-1].
+    """
+    if q <= 0:
+        raise ValueError(f"Tsallis entropy requires q > 0, got {q}.")
+    if math.isclose(float(q), 1.0, rel_tol=0.0, abs_tol=shannon_tol):
+        return entropy_from_logits_with_chunking(logits, chunk_size=chunk_size)
+
+    orig_shape = logits.shape[:-1]
+    flat_logits = logits.reshape(-1, logits.shape[-1])
+    entropy = torch.zeros(flat_logits.shape[0], device=logits.device)
+    for i in range(0, flat_logits.shape[0], chunk_size):
+        logits_chunk = flat_logits[i : i + chunk_size].float()
+        log_probs_chunk = F.log_softmax(logits_chunk, dim=-1)
+        sum_prob_powers_chunk = torch.exp(log_probs_chunk * q).sum(dim=-1)
+        entropy_chunk = (1.0 - sum_prob_powers_chunk) / (q - 1.0)
+        entropy[i : i + chunk_size] = entropy_chunk
+    return entropy.reshape(orig_shape)
+
+
+def get_entropy_from_logits_fn(
+    *,
+    entropy_type: str = "shannon",
+    tsallis_q: float = 2.0,
+    use_chunking: bool = False,
+):
+    """Return a configured entropy helper for actor training."""
+    entropy_type = entropy_type.lower()
+    if entropy_type == "shannon":
+        return entropy_from_logits_with_chunking if use_chunking else entropy_from_logits
+    if entropy_type == "tsallis":
+        if use_chunking:
+            return lambda logits: tsallis_entropy_from_logits_with_chunking(logits, q=tsallis_q)
+        return lambda logits: tsallis_entropy_from_logits(logits, q=tsallis_q)
+    raise ValueError(f"Invalid entropy_type: {entropy_type}")
 
 
 def masked_sum(values: torch.Tensor, mask: torch.Tensor, axis: int | tuple[int, ...] | None = None) -> torch.Tensor:

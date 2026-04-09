@@ -445,6 +445,10 @@ class AgentLoopWorker:
             and algo_config.get("omega_escort_alpha", 0.0) > 0.0
         )
         if omega_escort_active:
+            if config.name != "vllm":
+                raise ValueError(
+                    "Omega escort requires rollout.name=vllm with modified vLLM output_exact_entropy support."
+                )
             sampling_params["output_exact_entropy"] = True
 
         # override sampling params for validation

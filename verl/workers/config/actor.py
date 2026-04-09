@@ -115,6 +115,8 @@ class ActorConfig(BaseConfig):
         loss_scale_factor (Optional[int]): Scale factor for 'seq-mean-token-sum-norm' loss aggregation mode.
             If None, uses response_length. Set to a constant to ensure consistent normalization.
         entropy_coeff (float): Entropy coefficient for regularization.
+        entropy_type (str): Entropy type for actor regularization. Options: 'shannon', 'tsallis'.
+        tsallis_q (float): Tsallis entropy order. Used when entropy_type is 'tsallis'.
         tau_pos (float): Positive tau for SAPO smoothing (>= 1.0 keeps rewards stable).
         tau_neg (float): Negative tau for SAPO smoothing (> tau_pos for asymmetry).
         use_kl_loss (bool): Whether to use KL divergence loss.
@@ -156,6 +158,8 @@ class ActorConfig(BaseConfig):
     loss_agg_mode: str = "token-mean"
     loss_scale_factor: Optional[int] = None
     entropy_coeff: float = 0
+    entropy_type: str = "shannon"
+    tsallis_q: float = 2.0
     tau_pos: float = 1.0
     tau_neg: float = 1.05
     calculate_entropy: bool = False
@@ -208,6 +212,13 @@ class ActorConfig(BaseConfig):
         ]
         if self.loss_agg_mode not in valid_loss_agg_modes:
             raise ValueError(f"Invalid loss_agg_mode: {self.loss_agg_mode}")
+
+        self.entropy_type = self.entropy_type.lower()
+        valid_entropy_types = ["shannon", "tsallis"]
+        if self.entropy_type not in valid_entropy_types:
+            raise ValueError(f"Invalid entropy_type: {self.entropy_type}. Must be one of {valid_entropy_types}")
+        if self.tsallis_q <= 0:
+            raise ValueError(f"Invalid tsallis_q: {self.tsallis_q}. Tsallis entropy requires q > 0.")
 
     def validate(self, n_gpus: int, train_batch_size: int, model_config: dict = None):
         """Validate actor configuration with runtime parameters."""

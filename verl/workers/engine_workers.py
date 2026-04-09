@@ -531,6 +531,11 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
                 self.config.actor.ppo_micro_batch_size_per_gpu
             )
             actor_training_config.engine_config.use_remove_padding = model_config.use_remove_padding
+            if actor_config.strategy in {"fsdp", "fsdp2"}:
+                actor_training_config.engine_config.entropy_type = (
+                    actor_config.entropy_type if actor_config.entropy_coeff != 0 else "shannon"
+                )
+                actor_training_config.engine_config.tsallis_q = actor_config.tsallis_q
 
             if self.config.actor.use_dynamic_bsz:
                 assert self.config.rollout.log_prob_max_token_len_per_gpu is not None
