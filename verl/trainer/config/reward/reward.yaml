@@ -11,9 +11,13 @@ custom_reward_function:
   # The name of the reward function within the specified file. Default is 'compute_score'.
   name: compute_score
   # Extra kwargs forwarded to the reward function.
+  # Hydra requires `+reward.custom_reward_function.reward_kwargs.some_key=value`
+  # when adding new nested keys from the CLI.
   reward_kwargs: {}
 
 # Extra kwargs consumed by reward managers.
+# Hydra requires `+reward.reward_kwargs.some_key=value` when adding new nested
+# keys from the CLI.
 reward_kwargs: {}
 
 # reward manager, see `verl/trainer/config/reward_manager.yaml` for details.

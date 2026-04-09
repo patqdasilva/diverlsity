@@ -77,9 +77,9 @@ python3 -m verl.trainer.main_ppo \
     reward.num_workers=8 \
     reward.custom_reward_function.path=${ERDOS_MODULE} \
     reward.custom_reward_function.name=compute_score_erdos \
-    reward.custom_reward_function.reward_kwargs.train_budget_s=10 \
-    reward.custom_reward_function.reward_kwargs.val_budget_s=30 \
-    reward.custom_reward_function.reward_kwargs.num_cpus_per_task=1 \
+    +reward.custom_reward_function.reward_kwargs.train_budget_s=10 \
+    +reward.custom_reward_function.reward_kwargs.val_budget_s=30 \
+    +reward.custom_reward_function.reward_kwargs.num_cpus_per_task=1 \
     trainer.n_gpus_per_node=2 \
     trainer.nnodes=1 \
     trainer.total_epochs=15 \
