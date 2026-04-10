@@ -21,6 +21,10 @@
 set -x
 
 # ---- Environment ----
+# Some cluster modules export ROCm visibility vars even on CUDA runs.
+# Clear them so verl workers see a single device-selection mechanism.
+unset ROCR_VISIBLE_DEVICES
+unset HIP_VISIBLE_DEVICES
 export CUDA_VISIBLE_DEVICES=0,1
 export VLLM_USE_V1=1
 export VLLM_ATTENTION_BACKEND=FLASH_ATTN

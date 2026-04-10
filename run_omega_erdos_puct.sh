@@ -10,6 +10,10 @@ set -x
 source /anvil/scratch/x-pdasilva/envs/rl/bin/activate
 cd /home/x-pdasilva/e-rl/mode_collapse/diverlsity
 
+# Some cluster modules export ROCm visibility vars even on CUDA runs.
+# Clear them so verl workers see a single device-selection mechanism.
+unset ROCR_VISIBLE_DEVICES
+unset HIP_VISIBLE_DEVICES
 export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0,1}
 export VLLM_USE_V1=1
 export VLLM_ATTENTION_BACKEND=FLASH_ATTN
@@ -83,7 +87,7 @@ python3 -m verl.trainer.main_ppo \
     +reward.custom_reward_function.reward_kwargs.train_budget_s=10 \
     +reward.custom_reward_function.reward_kwargs.val_budget_s=30 \
     +reward.custom_reward_function.reward_kwargs.num_cpus_per_task=1 \
-    trainer.n_gpus_per_node=2 \
+    trainer.n_gpus_per_node=1 \
     trainer.nnodes=1 \
     trainer.total_epochs=15 \
     trainer.save_freq=-1 \
