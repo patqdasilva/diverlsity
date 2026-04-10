@@ -7,6 +7,8 @@
 #   Omega + Tsallis:
 #     keep algorithm.omega_escort_alpha>0 and set actor_rollout_ref.actor.entropy_type=tsallis actor_rollout_ref.actor.entropy_coeff>0
 set -x
+source /anvil/scratch/x-pdasilva/envs/rl/bin/activate
+cd /home/x-pdasilva/e-rl/mode_collapse/diverlsity
 
 export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0,1}
 export VLLM_USE_V1=1
@@ -15,14 +17,14 @@ export NCCL_DEBUG=WARN
 export HYDRA_FULL_ERROR=1
 export TOKENIZERS_PARALLELISM=true
 
-MODEL_PATH=${MODEL_PATH:-"Qwen/Qwen2.5-3B-Instruct"}
+MODEL_PATH=${MODEL_PATH:-"/anvil/scratch/x-pdasilva/models/Qwen/Qwen3.5-0.8B"}
 ERDOS_MODULE="examples/erdos_min_overlap/erdos_puct.py"
 
 python3 -m verl.trainer.main_ppo \
     algorithm.adv_estimator=grpo \
     algorithm.norm_adv_by_std_in_grpo=True \
     algorithm.use_kl_in_reward=False \
-    algorithm.omega_escort_alpha=0.5 \
+    algorithm.omega_escort_alpha=1 \
     algorithm.omega_escort_block_size=64 \
     algorithm.omega_escort_log_clip=3.0 \
     data.train_files=erdos_train \
@@ -59,7 +61,8 @@ python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.actor.use_kl_loss=True \
     actor_rollout_ref.actor.kl_loss_coef=0.001 \
     actor_rollout_ref.actor.kl_loss_type=low_var_kl \
-    actor_rollout_ref.actor.entropy_coeff=0 \
+    actor_rollout_ref.actor.entropy_type='tsallis' \
+    actor_rollout_ref.actor.entropy_coeff=2 \
     actor_rollout_ref.actor.fsdp_config.param_offload=False \
     actor_rollout_ref.actor.fsdp_config.optimizer_offload=False \
     actor_rollout_ref.rollout.name=vllm \
@@ -89,5 +92,5 @@ python3 -m verl.trainer.main_ppo \
     trainer.critic_warmup=0 \
     trainer.logger='["console","wandb"]' \
     trainer.project_name='omega_erdos_puct' \
-    trainer.experiment_name='qwen2.5_3b_omega_erdos_puct' \
+    trainer.experiment_name='qwen3.5_0.8b_omega_erdos_puct' \
     "$@"

@@ -121,10 +121,17 @@ def load_module(module_path: str, module_name: Optional[str] = None) -> object:
         if spec is None or spec.loader is None:
             raise ImportError(f"Could not load module from {module_path=}")
 
-        module = importlib.util.module_from_spec(spec)
         existing_module = sys.modules.get(spec_name)
-        if module_name is not None and existing_module is not None and existing_module is not module:
-            raise RuntimeError(f"Module name '{module_name}' already in `sys.modules` and points to a different module.")
+        if existing_module is not None:
+            existing_file = getattr(existing_module, "__file__", None)
+            if existing_file is not None and os.path.abspath(existing_file) != os.path.abspath(module_path):
+                raise RuntimeError(
+                    f"Module name '{spec_name}' already exists in `sys.modules` for a different file: "
+                    f"{existing_file!r} != {module_path!r}"
+                )
+            return existing_module
+
+        module = importlib.util.module_from_spec(spec)
 
         # Register the module before execution so decorators like @dataclass can resolve
         # cls.__module__ via sys.modules on Python 3.12+.
@@ -132,10 +139,7 @@ def load_module(module_path: str, module_name: Optional[str] = None) -> object:
         try:
             spec.loader.exec_module(module)
         except Exception as e:
-            if existing_module is None:
-                sys.modules.pop(spec_name, None)
-            else:
-                sys.modules[spec_name] = existing_module
+            sys.modules.pop(spec_name, None)
             raise RuntimeError(f"Error loading module from {module_path=}") from e
 
     return module

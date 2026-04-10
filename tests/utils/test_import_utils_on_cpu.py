@@ -133,3 +133,38 @@ def test_load_extern_object_dataclass_module_with_future_annotations():
             sys.modules.pop(module_name, None)
         if os.path.exists(temp_path):
             os.remove(temp_path)
+
+
+def test_load_extern_object_reuses_cached_module_for_class_identity():
+    """Loading different objects from the same file should preserve isinstance relationships."""
+    source = textwrap.dedent(
+        """\
+        class TempDataset:
+            pass
+
+        class TempSampler:
+            def __init__(self, data_source):
+                if not isinstance(data_source, TempDataset):
+                    raise TypeError("TempSampler requires a TempDataset")
+                self.data_source = data_source
+        """
+    )
+
+    with tempfile.NamedTemporaryFile(suffix=".py", mode="w+", delete=False) as temp_file:
+        temp_file.write(source)
+        temp_path = temp_file.name
+
+    module_name = None
+    try:
+        TempDataset = load_extern_object(temp_path, "TempDataset")
+        TempSampler = load_extern_object(temp_path, "TempSampler")
+        module_name = TempDataset.__module__
+        sampler = TempSampler(TempDataset())
+        assert isinstance(sampler.data_source, TempDataset)
+        assert TempSampler.__module__ == TempDataset.__module__
+        assert module_name in sys.modules
+    finally:
+        if module_name is not None:
+            sys.modules.pop(module_name, None)
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
