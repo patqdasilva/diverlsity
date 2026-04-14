@@ -92,6 +92,27 @@ class TestPrintCfgCommand(unittest.TestCase):
         self.assertIn("critic", result.stdout)
         self.assertIn("profiler", result.stdout)
 
+    def test_command_mirrors_actor_entropy_fields_into_ref(self):
+        """Actor entropy overrides should appear on the ref config surface as well."""
+        import subprocess
+
+        result = subprocess.run(
+            [
+                "python3",
+                "scripts/print_cfg.py",
+                "--config-name=ppo_trainer.yaml",
+                "actor_rollout_ref.actor.entropy_type=tsallis",
+                "actor_rollout_ref.actor.entropy_coeff=2",
+            ],
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual(result.returncode, 0, f"Command failed with stderr: {result.stderr}")
+        self.assertIn("entropy_coeff: 2", result.stdout)
+        self.assertIn("entropy_type: tsallis", result.stdout)
+        self.assertIn("tsallis_q: 2.0", result.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()

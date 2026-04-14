@@ -8,6 +8,16 @@ strategy: ${actor_rollout_ref.actor.strategy}
 # same as actor_rollout_ref.actor.use_torch_compile if it exists, otherwise 1
 use_torch_compile: ${oc.select:actor_rollout_ref.actor.use_torch_compile,true}
 
+# Entropy coefficient for actor regularization settings mirrored onto ref config.
+# Ref remains forward-only at runtime, but exposing the field keeps actor/ref schema aligned.
+entropy_coeff: ${oc.select:actor_rollout_ref.actor.entropy_coeff,0}
+
+# Entropy type mirrored from actor config for schema consistency.
+entropy_type: ${oc.select:actor_rollout_ref.actor.entropy_type,shannon}
+
+# Tsallis entropy order mirrored from actor config.
+tsallis_q: ${oc.select:actor_rollout_ref.actor.tsallis_q,2.0}
+
 # [Will be deprecated, use log_prob_micro_batch_size_per_gpu]
 # The batch size for one forward pass in the computation of log_prob. Global batch size.
 log_prob_micro_batch_size: null

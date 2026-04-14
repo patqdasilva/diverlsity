@@ -146,6 +146,9 @@ actor_rollout_ref:
     rollout_n: ${oc.select:actor_rollout_ref.rollout.n,1}
     strategy: megatron
     use_torch_compile: ${oc.select:actor_rollout_ref.actor.use_torch_compile,true}
+    entropy_coeff: ${oc.select:actor_rollout_ref.actor.entropy_coeff,0}
+    entropy_type: ${oc.select:actor_rollout_ref.actor.entropy_type,shannon}
+    tsallis_q: ${oc.select:actor_rollout_ref.actor.tsallis_q,2.0}
     log_prob_micro_batch_size: null
     log_prob_micro_batch_size_per_gpu: null
     log_prob_use_dynamic_bsz: ${oc.select:actor_rollout_ref.actor.use_dynamic_bsz,false}
@@ -438,6 +441,19 @@ data:
     path: null
     name: null
   apply_chat_template_kwargs: {}
+  archive_max_size: 1000
+  puct_c: 1.0
+  topk_children: 2
+  train_epoch_steps: 1
+  train_initial_state_count: 32
+  val_initial_state_count: 16
+  validation_puct_steps: 1
+  train_budget_s: 10
+  val_budget_s: 30
+  num_cpus_per_task: 1
+  target_c5: 0.3808
+  current_record_c5: 0.38092
+  max_construction_len: 1000
 critic:
   optim:
     _target_: verl.workers.config.McoreOptimizerConfig

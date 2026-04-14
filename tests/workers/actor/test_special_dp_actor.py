@@ -126,6 +126,28 @@ class TestDataParallelPPOActor(unittest.TestCase):
         optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
         return DataParallelPPOActor(config=config, actor_module=model, actor_optimizer=optimizer)
 
+    def _build_ref_policy(self, *, entropy_coeff=None, entropy_type=None, tsallis_q=None, use_fused_kernels=False):
+        config = FSDPActorConfig(
+            strategy="fsdp2",
+            ppo_mini_batch_size=4,
+            ppo_micro_batch_size_per_gpu=2,
+            ppo_epochs=1,
+            clip_ratio=0.2,
+            entropy_coeff=self.config.entropy_coeff if entropy_coeff is None else entropy_coeff,
+            entropy_type=self.config.entropy_type if entropy_type is None else entropy_type,
+            tsallis_q=self.config.tsallis_q if tsallis_q is None else tsallis_q,
+            grad_clip=1.0,
+            use_dynamic_bsz=False,
+            use_torch_compile=False,
+            ulysses_sequence_parallel_size=1,
+            use_fused_kernels=use_fused_kernels,
+            optim=OptimizerConfig(lr=1e-6),
+            rollout_n=1,
+        )
+        model = MockTransformerModel(vocab_size=1000, hidden_size=64).to(self.device)
+        model.load_state_dict(self.mock_model.state_dict())
+        return DataParallelPPOActor(config=config, actor_module=model, actor_optimizer=None)
+
     @classmethod
     def tearDownClass(cls):
         """Clean up distributed environment"""
@@ -249,7 +271,12 @@ class TestDataParallelPPOActor(unittest.TestCase):
             optim=OptimizerConfig(lr=1e-6),
             rollout_n=1,
         )
-        tsallis_actor = DataParallelPPOActor(config=tsallis_config, actor_module=self.mock_model, actor_optimizer=None)
+        tsallis_model = MockTransformerModel(vocab_size=1000, hidden_size=64).to(self.device)
+        tsallis_model.load_state_dict(self.mock_model.state_dict())
+        tsallis_optimizer = torch.optim.Adam(tsallis_model.parameters(), lr=1e-4)
+        tsallis_actor = DataParallelPPOActor(
+            config=tsallis_config, actor_module=tsallis_model, actor_optimizer=tsallis_optimizer
+        )
 
         data = self._create_test_data_for_compute_log_prob()
 
@@ -264,6 +291,24 @@ class TestDataParallelPPOActor(unittest.TestCase):
         self.assertTrue(torch.all(tsallis_entropy >= 0))
         self.assertTrue(torch.allclose(tsallis_outputs["log_probs"], shannon_outputs["log_probs"]))
         self.assertFalse(torch.allclose(tsallis_entropy, shannon_entropy))
+
+    def test_ref_initialization_ignores_mirrored_tsallis_entropy(self):
+        """Ref policies should stay forward-only even when config mirrors Tsallis settings."""
+        ref_policy = self._build_ref_policy(
+            entropy_coeff=2.0,
+            entropy_type="tsallis",
+            tsallis_q=2.0,
+            use_fused_kernels=True,
+        )
+
+        self.assertEqual(ref_policy.entropy_type, "shannon")
+        self.assertEqual(ref_policy.tsallis_q, 2.0)
+
+        data = self._create_test_data_for_compute_log_prob()
+        outputs = ref_policy.compute_log_prob(data, calculate_entropy=False)
+
+        self.assertIn("log_probs", outputs)
+        self.assertNotIn("entropys", outputs)
 
     def test_update_policy(self):
         """Test update_policy method"""

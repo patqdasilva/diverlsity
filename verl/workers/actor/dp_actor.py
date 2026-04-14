@@ -78,8 +78,12 @@ class DataParallelPPOActor(BasePPOActor):
         if torch.distributed.get_rank() == 0:
             print(f"{role} use_prefix_grouper={self.use_prefix_grouper}")
 
+        # Ref workers share the actor implementation but remain forward-only. Force
+        # entropy regularization off during ref initialization even if the config
+        # mirrors actor entropy settings for schema consistency.
+        entropy_coeff = 0.0 if actor_optimizer is None else float(self.config.get("entropy_coeff", 0.0))
         configured_entropy_type = self.config.get("entropy_type", "shannon")
-        self.entropy_type = configured_entropy_type if self.config.entropy_coeff != 0 else "shannon"
+        self.entropy_type = configured_entropy_type if entropy_coeff != 0 else "shannon"
         self.tsallis_q = float(self.config.get("tsallis_q", 2.0))
         if self.entropy_type == "tsallis" and self.use_fused_kernels:
             raise ValueError("Tsallis entropy regularization is not supported when use_fused_kernels=True.")
