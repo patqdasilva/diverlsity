@@ -364,20 +364,20 @@ def compute_score(solution_str, ground_truth, extra_info, data_source):
     
     if is_batch:
         # Extract responses for diversity computation
-        responses = [extract_xml_answer(sol, 'response') for sol in solution_str]
-        thinking = [extract_xml_answer(sol, 'thinking') for sol in solution_str]
+        # responses = [extract_xml_answer(sol, 'response') for sol in solution_str]
+        # thinking = [extract_xml_answer(sol, 'thinking') for sol in solution_str]
         
         # Compute diversity scores for all responses in this batch
-        diversity_think = compute_diversity_scores(thinking, threshold=0.7)
-        diversity_resp = compute_diversity_scores(responses, threshold=0.7)
+        # diversity_think = compute_diversity_scores(thinking, threshold=0.7)
+        # diversity_resp = compute_diversity_scores(responses, threshold=0.7)
 
         # Process each item in the batch with its diversity score
         scores = []
-        for sol, gt, ei, ds, div_think, div_resp in zip(solution_str, ground_truth, extra_info, data_source, diversity_think, diversity_resp):
-            score = compute_score_single(sol, gt, ei, ds, diversity_score=div_think)
+        for sol, gt, ei, ds in zip(solution_str, ground_truth, extra_info, data_source):#, diversity_think, diversity_resp):
+            score = compute_score_single(sol, gt, ei, ds, diversity_score=1.0)
             reward_data = [
-                (ei['index'], 'train-diversity_think', float(div_think), ei['split']),
-                (ei['index'], 'train-diversity_resp', float(div_resp), ei['split']),
+                (ei['index'], 'train-diversity_think(not_impl)', float(1.0), ei['split']),
+                (ei['index'], 'train-diversity_resp(not_impl)', float(1.0), ei['split']),
             ]
             write_data(reward_data)
             scores.append(score)
