@@ -16,13 +16,19 @@ unset ROCR_VISIBLE_DEVICES
 unset HIP_VISIBLE_DEVICES
 export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0,1}
 export VLLM_USE_V1=1
-export VLLM_ATTENTION_BACKEND=FLASH_ATTN
+# Keep rollout backend configurable from the environment in case the cluster's
+# FlashAttention build is unavailable and we need to fall back to XFORMERS.
+export VLLM_ATTENTION_BACKEND=${VLLM_ATTENTION_BACKEND:-FLASH_ATTN}
 export NCCL_DEBUG=WARN
 export HYDRA_FULL_ERROR=1
 export TOKENIZERS_PARALLELISM=true
 
 MODEL_PATH=${MODEL_PATH:-"/anvil/scratch/x-pdasilva/models/Qwen/Qwen3.5-0.8B"}
 ERDOS_MODULE="examples/erdos_min_overlap/erdos_puct.py"
+# HF-loaded actor/ref workers should avoid FlashAttention on this cluster and
+# initialize directly in bf16 to match Qwen's supported FA2 dtypes.
+HF_ATTN_IMPL=${HF_ATTN_IMPL:-sdpa}
+FSDP_MODEL_DTYPE=${FSDP_MODEL_DTYPE:-bfloat16}
 
 python3 -m verl.trainer.main_ppo \
     algorithm.adv_estimator=grpo \
@@ -57,6 +63,7 @@ python3 -m verl.trainer.main_ppo \
     data.filter_overlong_prompts=False \
     data.validation_shuffle=False \
     actor_rollout_ref.model.path=${MODEL_PATH} \
+    +actor_rollout_ref.model.override_config.attn_implementation=${HF_ATTN_IMPL} \
     actor_rollout_ref.model.enable_gradient_checkpointing=True \
     actor_rollout_ref.model.use_remove_padding=True \
     actor_rollout_ref.actor.optim.lr=1e-6 \
@@ -67,6 +74,7 @@ python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.actor.kl_loss_type=low_var_kl \
     actor_rollout_ref.actor.entropy_type='tsallis' \
     actor_rollout_ref.actor.entropy_coeff=2 \
+    actor_rollout_ref.actor.fsdp_config.model_dtype=${FSDP_MODEL_DTYPE} \
     actor_rollout_ref.actor.fsdp_config.param_offload=False \
     actor_rollout_ref.actor.fsdp_config.optimizer_offload=False \
     actor_rollout_ref.rollout.name=vllm \
@@ -79,6 +87,7 @@ python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.rollout.calculate_log_probs=True \
     actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=8 \
     actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=8 \
+    actor_rollout_ref.ref.fsdp_config.model_dtype=${FSDP_MODEL_DTYPE} \
     actor_rollout_ref.ref.fsdp_config.param_offload=True \
     reward.reward_manager.name=naive \
     reward.num_workers=8 \

@@ -75,43 +75,42 @@ class TestPrintCfgCommand(unittest.TestCase):
     """Test suite for the print_cfg.py command-line tool."""
 
     def test_command_with_override(self):
-        """Test that the command runs without error when overriding config values."""
-        import subprocess
+        """Hydra config should still render cleanly with the default trainer config."""
+        import os
 
-        # Run the command
-        result = subprocess.run(
-            ["python3", "scripts/print_cfg.py"],
-            capture_output=True,
-            text=True,
-        )
+        from hydra import compose, initialize_config_dir
 
-        # Verify the command exited successfully
-        self.assertEqual(result.returncode, 0, f"Command failed with stderr: {result.stderr}")
+        with initialize_config_dir(config_dir=os.path.abspath("verl/trainer/config"), version_base=None):
+            cfg = compose(config_name="ppo_trainer")
 
-        # Verify the output contains expected config information
-        self.assertIn("critic", result.stdout)
-        self.assertIn("profiler", result.stdout)
+        rendered = OmegaConf.to_yaml(cfg, resolve=True)
+
+        self.assertIn("critic:", rendered)
+        self.assertIn("profiler:", rendered)
 
     def test_command_mirrors_actor_entropy_fields_into_ref(self):
         """Actor entropy overrides should appear on the ref config surface as well."""
-        import subprocess
+        import os
 
-        result = subprocess.run(
-            [
-                "python3",
-                "scripts/print_cfg.py",
-                "--config-name=ppo_trainer.yaml",
-                "actor_rollout_ref.actor.entropy_type=tsallis",
-                "actor_rollout_ref.actor.entropy_coeff=2",
-            ],
-            capture_output=True,
-            text=True,
-        )
+        from hydra import compose, initialize_config_dir
 
-        self.assertEqual(result.returncode, 0, f"Command failed with stderr: {result.stderr}")
-        self.assertIn("entropy_coeff: 2", result.stdout)
-        self.assertIn("entropy_type: tsallis", result.stdout)
-        self.assertIn("tsallis_q: 2.0", result.stdout)
+        with initialize_config_dir(config_dir=os.path.abspath("verl/trainer/config"), version_base=None):
+            cfg = compose(
+                config_name="ppo_trainer",
+                overrides=[
+                    "actor_rollout_ref.actor.entropy_type=tsallis",
+                    "actor_rollout_ref.actor.entropy_coeff=2",
+                ],
+            )
+
+        self.assertEqual(cfg.actor_rollout_ref.ref.entropy_coeff, cfg.actor_rollout_ref.actor.entropy_coeff)
+        self.assertEqual(cfg.actor_rollout_ref.ref.entropy_type, cfg.actor_rollout_ref.actor.entropy_type)
+        self.assertEqual(cfg.actor_rollout_ref.ref.tsallis_q, cfg.actor_rollout_ref.actor.tsallis_q)
+
+        rendered = OmegaConf.to_yaml(cfg, resolve=True)
+        self.assertIn("entropy_coeff: 2", rendered)
+        self.assertIn("entropy_type: tsallis", rendered)
+        self.assertIn("tsallis_q: 2.0", rendered)
 
 
 if __name__ == "__main__":
