@@ -103,7 +103,7 @@ def compute_diversity_scores(responses: List[str], threshold: float = 0.8) -> Li
     return diversity_scores
 
 
-def write_data(data, filename='/models/rewards.csv'):
+def write_data(data, filename='/fs/scratch/PAS2836/pqd/rewards.csv'):
     """
     Creates file with header if it doesn't exist, otherwise appends.
     
@@ -279,16 +279,14 @@ def check_constraint_following(response, ground_truth, extra_info, no_hacking):
 def compute_score_single(solution_str, ground_truth, extra_info, data_source, diversity_score=0.0):
     """Score a single response with optional diversity bonus."""
     response = extract_xml_answer(solution_str, 'response')
+    thinking = extract_xml_answer(solution_str, 'thinking')
 
     # Format rewards
     think_format, thoughts = follows_tag_format(solution_str, 'thinking')
-    resp_format = follows_resp_format(solution_str)
+    resp_format, responses = follows_tag_format(solution_str, 'response')
     # Encourage longer thinking dependent on n constraints
     if thoughts:
-        think_long = np.mean([
-            thinking_len_reward(thinking, len(ground_truth["instruction_id"]))
-            for thinking in thoughts
-        ])
+        think_long = thinking_len_reward(thoughts[0], len(ground_truth["instruction_id"]))
     else:
         think_long = 0
     format_reward = sum([think_format, resp_format])
