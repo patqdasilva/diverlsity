@@ -27,7 +27,7 @@ from torch.distributed.tensor import DTensor
 
 import verl.utils.torch_functional as verl_F
 from verl import DataProto
-from verl.trainer.ppo.core_algos import agg_loss, get_policy_loss_fn, kl_penalty
+from verl.trainer.ppo.core_algos import TSALLIS_STOCHASTIC_Q2, agg_loss, get_policy_loss_fn, kl_penalty
 from verl.utils.attention_utils import index_first_axis, pad_input, rearrange, unpad_input
 from verl.utils.device import get_device_id, get_device_name
 from verl.utils.fsdp_utils import FSDPModule, fsdp2_clip_grad_norm_
@@ -84,12 +84,14 @@ class DataParallelPPOActor(BasePPOActor):
         self.device_name = get_device_name()
 
     def _forward_micro_batch(
-        self, micro_batch, temperature, calculate_entropy=False
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+        self, micro_batch, temperature, calculate_entropy=False, return_response_logits=False
+    ) -> tuple[torch.Tensor | None, torch.Tensor, torch.Tensor | None, torch.Tensor | None]:
         """
         Returns:
             entropy: # (bs, response_len)
             log_probs: # (bs, response_len)
+            response_logits: # (bs, response_len, vocab) or (num_valid_response_tokens, vocab)
+            action_ids: # (bs, response_len) or (num_valid_response_tokens,)
         """
         response_length = micro_batch["responses"].size(-1)
         multi_modal_inputs = {}
@@ -104,8 +106,13 @@ class DataParallelPPOActor(BasePPOActor):
             attention_mask = micro_batch["attention_mask"]
             position_ids = micro_batch["position_ids"]
             entropy = None
+            response_logits = None
+            action_ids = None
             if position_ids.dim() == 3:  # qwen2vl mrope
                 position_ids = position_ids.transpose(0, 1)  # (bsz, 4, seqlen) -> (4, bsz, seqlen)
+
+            if return_response_logits and self.use_fused_kernels:
+                raise ValueError(f"{TSALLIS_STOCHASTIC_Q2} does not support use_fused_kernels=True in v1.")
 
             if self.use_remove_padding:
                 input_ids_rmpad, indices, cu_seqlens, *_ = unpad_input(
@@ -185,9 +192,7 @@ class DataParallelPPOActor(BasePPOActor):
                     logits_rmpad.div_(temperature)
 
                     # if use_sp: ((total_nnz / sp) + pad) ; if not use_sp: (batch, seqlen)
-                    inplace_backward = True
-                    if calculate_entropy:
-                        inplace_backward = False
+                    inplace_backward = not (calculate_entropy or return_response_logits)
                     log_probs = logprobs_from_logits(
                         logits=logits_rmpad,
                         labels=input_ids_rmpad_rolled,
@@ -219,6 +224,20 @@ class DataParallelPPOActor(BasePPOActor):
                             unpad_dim=0,
                             padding_size=pad_size,
                         )
+                    if return_response_logits:
+                        logits_rmpad = gather_outputs_and_unpad(
+                            logits_rmpad,
+                            gather_dim=0,
+                            unpad_dim=0,
+                            padding_size=pad_size,
+                        )
+                        input_ids_rmpad_rolled = gather_outputs_and_unpad(
+                            input_ids_rmpad_rolled,
+                            gather_dim=0,
+                            unpad_dim=0,
+                            padding_size=pad_size,
+                            grad_scaler=False,
+                        )
                 # pad back to (bsz, seqlen)
                 if calculate_entropy:
                     full_entropy = pad_input(
@@ -238,6 +257,17 @@ class DataParallelPPOActor(BasePPOActor):
                 if calculate_entropy:
                     entropy = full_entropy.squeeze(-1)[:, -response_length - 1 : -1]  # (bsz, response_length)
                 log_probs = full_log_probs.squeeze(-1)[:, -response_length - 1 : -1]  # (bsz, response_length)
+                if return_response_logits:
+                    response_positions = torch.zeros(
+                        batch_size,
+                        seqlen,
+                        dtype=torch.bool,
+                        device=input_ids.device,
+                    )
+                    response_positions[:, -response_length - 1 : -1] = True
+                    response_row_mask = response_positions.reshape(-1)[indices]
+                    response_logits = logits_rmpad[response_row_mask]
+                    action_ids = input_ids_rmpad_rolled[response_row_mask]
 
             else:  # not using rmpad and no ulysses sp
                 extra_args = {}
@@ -263,14 +293,36 @@ class DataParallelPPOActor(BasePPOActor):
 
                     logits.div_(temperature)
                     logits = logits[:, -response_length - 1 : -1, :]  # (bsz, response_length, vocab_size)
-                    log_probs = logprobs_from_logits(logits, micro_batch["responses"])
+                    log_probs = logprobs_from_logits(
+                        logits,
+                        micro_batch["responses"],
+                        inplace_backward=not (calculate_entropy or return_response_logits),
+                    )
                     if calculate_entropy:
                         if not self.config.entropy_checkpointing:
                             entropy = verl_F.entropy_from_logits(logits)  # (bsz, response_length)
                         else:
                             entropy = torch.utils.checkpoint.checkpoint(verl_F.entropy_from_logits, logits)
+                    if return_response_logits:
+                        response_logits = logits
+                        action_ids = micro_batch["responses"]
 
-            return entropy, log_probs
+            return entropy, log_probs, response_logits, action_ids
+
+    def _validate_tsallis_update_mode(self, loss_mode: str, num_mini_batches: int) -> None:
+        if loss_mode != TSALLIS_STOCHASTIC_Q2:
+            return
+        if self.config.strategy not in {"fsdp", "fsdp2"}:
+            raise ValueError(f"{TSALLIS_STOCHASTIC_Q2} is only supported for FSDP actors. Got {self.config.strategy}.")
+        if self.use_fused_kernels:
+            raise ValueError(f"{TSALLIS_STOCHASTIC_Q2} does not support use_fused_kernels=True in v1.")
+        if self.config.ppo_epochs != 1:
+            raise ValueError(f"{TSALLIS_STOCHASTIC_Q2} requires ppo_epochs=1. Got {self.config.ppo_epochs}.")
+        if num_mini_batches != 1:
+            raise ValueError(
+                f"{TSALLIS_STOCHASTIC_Q2} requires exactly one PPO mini-batch / optimizer step per rollout batch. "
+                f"Got {num_mini_batches} mini-batches from ppo_mini_batch_size={self.config.ppo_mini_batch_size}."
+            )
 
     def _optimizer_step(self):
         assert self.config.grad_clip is not None
@@ -336,8 +388,10 @@ class DataParallelPPOActor(BasePPOActor):
             micro_batch = micro_batch.to(get_device_id())
             model_inputs = {**micro_batch.batch, **micro_batch.non_tensor_batch}
             with torch.no_grad():
-                entropy, log_probs = self._forward_micro_batch(
-                    model_inputs, temperature=temperature, calculate_entropy=calculate_entropy
+                entropy, log_probs, _, _ = self._forward_micro_batch(
+                    model_inputs,
+                    temperature=temperature,
+                    calculate_entropy=calculate_entropy,
                 )
             log_probs_lst.append(log_probs)
             if calculate_entropy:
@@ -389,6 +443,8 @@ class DataParallelPPOActor(BasePPOActor):
         # Split to make minibatch iterator for updating the actor
         # See PPO paper for details. https://arxiv.org/abs/1707.06347
         mini_batches = data.split(self.config.ppo_mini_batch_size)
+        loss_mode = self.config.policy_loss.get("loss_mode", "vanilla")
+        self._validate_tsallis_update_mode(loss_mode=loss_mode, num_mini_batches=len(mini_batches))
 
         on_policy = len(mini_batches) == 1 and self.config.ppo_epochs == 1
 
@@ -427,8 +483,11 @@ class DataParallelPPOActor(BasePPOActor):
                     calculate_entropy = False
                     if entropy_coeff != 0:
                         calculate_entropy = True
-                    entropy, log_prob = self._forward_micro_batch(
-                        model_inputs, temperature=temperature, calculate_entropy=calculate_entropy
+                    entropy, log_prob, response_logits, action_ids = self._forward_micro_batch(
+                        model_inputs,
+                        temperature=temperature,
+                        calculate_entropy=calculate_entropy,
+                        return_response_logits=loss_mode == TSALLIS_STOCHASTIC_Q2,
                     )
 
                     if on_policy:
@@ -436,7 +495,6 @@ class DataParallelPPOActor(BasePPOActor):
                     else:
                         old_log_prob = model_inputs["old_log_probs"]
 
-                    loss_mode = self.config.policy_loss.get("loss_mode", "vanilla")
                     # vanilla -> verl.trainer.ppo.core_algos.compute_policy_loss_vanilla
                     # gpg -> verl.trainer.ppo.core_algos.compute_policy_loss_gpg
                     # clip_cov -> verl.trainer.ppo.core_algos.compute_policy_loss_clip_cov
@@ -449,6 +507,8 @@ class DataParallelPPOActor(BasePPOActor):
                         loss_agg_mode=loss_agg_mode,
                         config=self.config,
                         rollout_log_probs=rollout_log_probs,
+                        response_logits=response_logits,
+                        action_ids=action_ids,
                     )
 
                     if entropy_coeff != 0:

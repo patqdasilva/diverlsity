@@ -21,7 +21,7 @@ from transformers import AutoModelForCausalLM, Qwen3Config
 
 from verl import DataProto
 from verl.workers.actor.dp_actor import DataParallelPPOActor
-from verl.workers.config import FSDPActorConfig, OptimizerConfig
+from verl.workers.config import FSDPActorConfig, OptimizerConfig, PolicyLossConfig
 
 
 class MockTransformerModel(nn.Module):
@@ -217,6 +217,68 @@ class TestDataParallelPPOActor(unittest.TestCase):
                 self.assertIsInstance(metrics[key], (float, int))
                 self.assertTrue(torch.isfinite(torch.tensor(metrics[key])))
 
+    def test_update_policy_tsallis_stochastic_q2(self):
+        """Test Tsallis q=2 update_policy path on the mock transformer."""
+        tsallis_config = FSDPActorConfig(
+            strategy="fsdp2",
+            ppo_mini_batch_size=4,
+            ppo_micro_batch_size_per_gpu=2,
+            ppo_epochs=1,
+            clip_ratio=0.2,
+            entropy_coeff=0.01,
+            grad_clip=1.0,
+            use_dynamic_bsz=False,
+            use_torch_compile=False,
+            ulysses_sequence_parallel_size=1,
+            policy_loss=PolicyLossConfig(
+                loss_mode="tsallis_stochastic_q2",
+                tsallis_alpha=1.0,
+                tsallis_chunk_rows=2,
+                tsallis_prob_floor=1e-8,
+            ),
+            optim=OptimizerConfig(lr=1e-6),
+        )
+        model = MockTransformerModel(vocab_size=1000, hidden_size=64).to(self.device)
+        actor = DataParallelPPOActor(
+            config=tsallis_config,
+            actor_module=model,
+            actor_optimizer=torch.optim.Adam(model.parameters(), lr=1e-4),
+        )
+
+        metrics = actor.update_policy(self._create_test_data_for_update_policy())
+
+        self.assertIsInstance(metrics, dict)
+        for key in ["actor/pg_loss", "actor/ppo_kl", "actor/grad_norm"]:
+            self.assertIn(key, metrics)
+            value = metrics[key][-1] if isinstance(metrics[key], list) else metrics[key]
+            self.assertTrue(torch.isfinite(torch.tensor(value)))
+
+    def test_update_policy_tsallis_requires_single_mini_batch(self):
+        """Test Tsallis q=2 guard for multiple PPO mini-batches."""
+        tsallis_config = FSDPActorConfig(
+            strategy="fsdp2",
+            ppo_mini_batch_size=2,
+            ppo_micro_batch_size_per_gpu=1,
+            ppo_epochs=1,
+            clip_ratio=0.2,
+            entropy_coeff=0.0,
+            grad_clip=1.0,
+            use_dynamic_bsz=False,
+            use_torch_compile=False,
+            ulysses_sequence_parallel_size=1,
+            policy_loss=PolicyLossConfig(loss_mode="tsallis_stochastic_q2"),
+            optim=OptimizerConfig(lr=1e-6),
+        )
+        model = MockTransformerModel(vocab_size=1000, hidden_size=64).to(self.device)
+        actor = DataParallelPPOActor(
+            config=tsallis_config,
+            actor_module=model,
+            actor_optimizer=torch.optim.Adam(model.parameters(), lr=1e-4),
+        )
+
+        with self.assertRaisesRegex(ValueError, "exactly one PPO mini-batch / optimizer step"):
+            actor.update_policy(self._create_test_data_for_update_policy())
+
     def test_dataparallelppoactor_initialization(self):
         """Test DataParallelPPOActor initialization"""
         self.assertIsNotNone(self.actor.actor_module)
@@ -267,6 +329,53 @@ class TestDataParallelPPOActor(unittest.TestCase):
         metrics = qwen_actor.update_policy(policy_data)
 
         self.assertIsInstance(metrics, dict)
+
+    def test_dataparallelppoactor_with_qwen3_model_tsallis(self):
+        """Test Tsallis q=2 update_policy path with a real Qwen3ForCausalLM model."""
+        qwen_config = Qwen3Config(
+            vocab_size=1000,
+            hidden_size=64,
+            intermediate_size=128,
+            num_hidden_layers=2,
+            num_attention_heads=4,
+            num_key_value_heads=2,
+            max_position_embeddings=512,
+            torch_dtype=torch.float32,
+            use_cache=False,
+        )
+
+        with torch.device(self.device):
+            qwen_model = AutoModelForCausalLM.from_config(config=qwen_config, torch_dtype=torch.float32).to(self.device)
+
+        qwen_optimizer = torch.optim.Adam(qwen_model.parameters(), lr=1e-4)
+        tsallis_config = FSDPActorConfig(
+            strategy="fsdp2",
+            ppo_mini_batch_size=4,
+            ppo_micro_batch_size_per_gpu=2,
+            ppo_epochs=1,
+            clip_ratio=0.2,
+            entropy_coeff=0.01,
+            grad_clip=1.0,
+            use_dynamic_bsz=False,
+            use_torch_compile=False,
+            ulysses_sequence_parallel_size=1,
+            policy_loss=PolicyLossConfig(
+                loss_mode="tsallis_stochastic_q2",
+                tsallis_alpha=1.0,
+                tsallis_chunk_rows=2,
+                tsallis_prob_floor=1e-8,
+            ),
+            optim=OptimizerConfig(lr=1e-6),
+        )
+        qwen_actor = DataParallelPPOActor(config=tsallis_config, actor_module=qwen_model, actor_optimizer=qwen_optimizer)
+
+        metrics = qwen_actor.update_policy(self._create_test_data_for_update_policy())
+
+        self.assertIsInstance(metrics, dict)
+        for key in ["actor/pg_loss", "actor/ppo_kl", "actor/grad_norm"]:
+            self.assertIn(key, metrics)
+            value = metrics[key][-1] if isinstance(metrics[key], list) else metrics[key]
+            self.assertTrue(torch.isfinite(torch.tensor(value)))
 
         expected_metric_keys = [
             "actor/pg_loss",

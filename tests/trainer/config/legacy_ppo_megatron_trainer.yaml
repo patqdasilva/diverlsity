@@ -75,6 +75,9 @@ actor_rollout_ref:
       clip_cov_ub: 5.0 # Upper bound for clip-cov loss
       kl_cov_ratio: 0.0002 # Ratio of tokens to be applied kl penalty for kl-cov loss
       ppo_kl_coef: 0.1 # KL divergence penalty coefficient
+      tsallis_alpha: 1.0 # Step size for the detached q=2 Tsallis mirror update
+      tsallis_chunk_rows: 2048 # Number of valid response rows processed per Tsallis chunk
+      tsallis_prob_floor: 1.0e-08 # Minimum selected-action probability used in the Tsallis target
     optim:
       optimizer: adam
       lr: 1e-6

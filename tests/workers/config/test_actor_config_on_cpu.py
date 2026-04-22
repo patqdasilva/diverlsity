@@ -68,6 +68,31 @@ class TestActorConfig(unittest.TestCase):
         self.assertIsInstance(config, ActorConfig)
         self.assertEqual(config.strategy, "fsdp")
 
+    def test_actor_config_tsallis_policy_loss_from_yaml(self):
+        """Test creating ActorConfig with Tsallis q=2 policy-loss options from YAML."""
+        from hydra import compose, initialize_config_dir
+
+        with initialize_config_dir(config_dir=os.path.abspath("verl/trainer/config/actor")):
+            cfg = compose(
+                config_name="actor",
+                overrides=[
+                    "strategy=fsdp",
+                    "ppo_micro_batch_size_per_gpu=128",
+                    "policy_loss.loss_mode=tsallis_stochastic_q2",
+                    "policy_loss.tsallis_alpha=0.75",
+                    "policy_loss.tsallis_chunk_rows=32",
+                    "policy_loss.tsallis_prob_floor=1e-6",
+                ],
+            )
+
+        config = omega_conf_to_dataclass(cfg)
+
+        self.assertIsInstance(config, ActorConfig)
+        self.assertEqual(config.policy_loss.loss_mode, "tsallis_stochastic_q2")
+        self.assertEqual(config.policy_loss.tsallis_alpha, 0.75)
+        self.assertEqual(config.policy_loss.tsallis_chunk_rows, 32)
+        self.assertEqual(config.policy_loss.tsallis_prob_floor, 1e-6)
+
     def test_fsdp_actor_config_from_yaml(self):
         """Test creating FSDPActorConfig from YAML file."""
         from hydra import compose, initialize_config_dir

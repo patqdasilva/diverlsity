@@ -47,7 +47,7 @@ policy_loss:
   # # Required when using verl.utils.omega_conf_to_dataclass to instantiate dataclass configs
   _target_: verl.workers.config.PolicyLossConfig
 
-  # Loss function mode: vanilla / clip-cov / kl-cov /gpg from https://arxiv.org/abs/2505.22617
+  # Loss function mode: vanilla / clip-cov / kl-cov / gpg / tsallis_stochastic_q2
   loss_mode: "vanilla"
 
   # Ratio of tokens to be clipped for clip-cov loss
@@ -64,6 +64,15 @@ policy_loss:
 
   # KL divergence penalty coefficient
   ppo_kl_coef: 0.1
+
+  # Step size for the detached q=2 Tsallis mirror update
+  tsallis_alpha: 1.0
+
+  # Number of valid response rows processed per Tsallis chunk
+  tsallis_chunk_rows: 2048
+
+  # Minimum selected-action probability used in the Tsallis target
+  tsallis_prob_floor: 1e-8
 
 # Constant C in Dual-clip PPO; clips when advantage < 0 and ratio > C
 clip_ratio_c: 3.0

@@ -237,6 +237,15 @@ actor_rollout_ref:
       # KL divergence penalty coefficient
       ppo_kl_coef: 0.1
 
+      # Step size for the detached q=2 Tsallis mirror update
+      tsallis_alpha: 1.0
+
+      # Number of valid response rows processed per Tsallis chunk
+      tsallis_chunk_rows: 2048
+
+      # Minimum selected-action probability used in the Tsallis target
+      tsallis_prob_floor: 1.0e-08
+
     # Constant C in Dual-clip PPO; clips when advantage < 0 and ratio > C
     clip_ratio_c: 3.0
 
