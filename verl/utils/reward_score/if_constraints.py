@@ -22,6 +22,14 @@ from instructions_util import split_into_sentences
 # Global embedding model - lazy loaded and cached
 _embedding_model = None
 
+
+def _reward_device() -> str:
+    use_gpu = os.environ.get("VERL_CUSTOM_REWARD_USE_GPU", "0").strip().lower()
+    if use_gpu in {"1", "true", "yes", "on"} and torch.cuda.is_available():
+        return "cuda"
+    return "cpu"
+
+
 def get_embedding_model():
     """Lazy load embedding model (Ray-safe singleton pattern)."""
     global _embedding_model, _embedding_tokenizer
@@ -29,7 +37,7 @@ def get_embedding_model():
     if _embedding_model is None:
         model_name = "Qwen/Qwen3-Embedding-0.6B"
         
-        device = "cuda" if torch.cuda.is_available() else "cpu"
+        device = _reward_device()
         print(f"CUDA_VISIBLE_DEVICES: {os.environ.get('CUDA_VISIBLE_DEVICES', 'not set')}")
         print(f"torch.cuda.is_available(): {torch.cuda.is_available()}")
         print(f"torch.cuda.device_count(): {torch.cuda.device_count() if torch.cuda.is_available() else 0}")
@@ -279,32 +287,33 @@ def check_constraint_following(response, ground_truth, extra_info, no_hacking):
 def compute_score_single(solution_str, ground_truth, extra_info, data_source, diversity_score=0.0):
     """Score a single response with optional diversity bonus."""
     response = extract_xml_answer(solution_str, 'response')
-    thinking = extract_xml_answer(solution_str, 'thinking')
+    # thinking = extract_xml_answer(solution_str, 'thinking')
 
     # Format rewards
     think_format, thoughts = follows_tag_format(solution_str, 'thinking')
     resp_format, responses = follows_tag_format(solution_str, 'response')
-    # Encourage longer thinking dependent on n constraints
-    if thoughts:
-        think_long = thinking_len_reward(thoughts[0], len(ground_truth["instruction_id"]))
-    else:
-        think_long = 0
     format_reward = sum([think_format, resp_format])
+    # Encourage longer thinking dependent on n constraints
+    # if thoughts:
+    #     think_long = thinking_len_reward(thoughts[0], len(ground_truth["instruction_id"]))
+    # else:
+    #     think_long = 0
+    
     
     # Prevent reward hacking
-    min_unique_words = len(set(response.split(' '))) > 5
-    not_fuzzy_pattern = not is_fuzzy_pattern(response, ground_truth["instruction_id"], threshold=0.7)
-    not_constraint_in_resp = not constraint_in_response(response, extra_info['constraints'], ground_truth["instruction_id"])
-    no_hacking = min_unique_words and not_fuzzy_pattern and not_constraint_in_resp
+    # min_unique_words = len(set(response.split(' '))) > 5
+    # not_fuzzy_pattern = not is_fuzzy_pattern(response, ground_truth["instruction_id"], threshold=0.7)
+    # not_constraint_in_resp = not constraint_in_response(response, extra_info['constraints'], ground_truth["instruction_id"])
+    # no_hacking = min_unique_words and not_fuzzy_pattern and not_constraint_in_resp
     
     format_data = [
         (extra_info['index'], 'format-think_format', float(think_format), extra_info['split']),
-        (extra_info['index'], 'format-think_long', float(think_long), extra_info['split']),
+        # (extra_info['index'], 'format-think_long', float(think_long), extra_info['split']),
         (extra_info['index'], 'format-resp_format', float(resp_format), extra_info['split']),
-        (extra_info['index'], 'hack-min_unique_words', float(min_unique_words), extra_info['split']),
-        (extra_info['index'], 'hack-not_fuzzy_pattern', float(not_fuzzy_pattern), extra_info['split']),
-        (extra_info['index'], 'hack-not_constraint_in_resp', float(not_constraint_in_resp), extra_info['split']),
-        (extra_info['index'], 'hack-no_hacking', float(no_hacking), extra_info['split']),
+        # (extra_info['index'], 'hack-min_unique_words', float(min_unique_words), extra_info['split']),
+        # (extra_info['index'], 'hack-not_fuzzy_pattern', float(not_fuzzy_pattern), extra_info['split']),
+        # (extra_info['index'], 'hack-not_constraint_in_resp', float(not_constraint_in_resp), extra_info['split']),
+        # (extra_info['index'], 'hack-no_hacking', float(no_hacking), extra_info['split']),
     ]
     write_data(format_data)
     
@@ -313,23 +322,24 @@ def compute_score_single(solution_str, ground_truth, extra_info, data_source, di
         diversity_score = 1
     constraint_reward = check_constraint_following(response, ground_truth, extra_info, no_hacking)
     # Calculate final reward
-    if not no_hacking:
-        final_reward = -0.5 # discourage hacking
-        format_multiplier = 0
-        think_bonus = 0
-    elif constraint_reward == 0:
-        final_reward = -0.4 + 0.4*(format_reward/2) # scale reward to 0 based on formatting [-0.4,0]
-        format_multiplier = 0
-        think_bonus = 0
-    else:
-        format_multiplier = 0.7 + 0.3*(format_reward/2) # scale reward based on formatting [0.7,1]
-        think_bonus = 0.7 + 0.3*think_long # Scale [0.7,1] for better gradient/lesser impact
-        final_reward = constraint_reward*format_multiplier*think_bonus*diversity_score
+    # if not no_hacking:
+    #     final_reward = -0.5 # discourage hacking
+    #     format_multiplier = 0
+    #     think_bonus = 0
+    # elif constraint_reward == 0:
+    #     final_reward = -0.4 + 0.4*(format_reward/2) # scale reward to 0 based on formatting [-0.4,0]
+    #     format_multiplier = 0
+    #     think_bonus = 0
+    # else:
+    #     format_multiplier = 0.7 + 0.3*(format_reward/2) # scale reward based on formatting [0.7,1]
+    #     think_bonus = 0.7 + 0.3*think_long # Scale [0.7,1] for better gradient/lesser impact
+    #     final_reward = constraint_reward*format_multiplier*think_bonus*diversity_score
+    final_reward = constraint_reward*format_reward
     reward_data = [
-        (extra_info['index'], 'train-format_multiplier', float(format_multiplier), extra_info['split']),
-        (extra_info['index'], 'train-think_bonus', float(think_bonus), extra_info['split']),
+        # (extra_info['index'], 'train-format_multiplier', float(format_multiplier), extra_info['split']),
+        # (extra_info['index'], 'train-think_bonus', float(think_bonus), extra_info['split']),
         (extra_info['index'], 'train-constraint_reward', float(constraint_reward), extra_info['split']),
-        (extra_info['index'], 'train-constraint_reward-nh', float(constraint_reward if no_hacking else 0), extra_info['split']),
+        # (extra_info['index'], 'train-constraint_reward-nh', float(constraint_reward if no_hacking else 0), extra_info['split']),
         (extra_info['index'], 'train-final_reward', float(final_reward), extra_info['split']),
     ]
     write_data(reward_data)
@@ -338,9 +348,9 @@ def compute_score_single(solution_str, ground_truth, extra_info, data_source, di
     if do_print:        
         print(f"--------------------------------")
         print(f"final_reward: {final_reward}")
-        print(f"constraint_reward: {constraint_reward} | format_reward: {format_reward} | format_multiplier: {format_multiplier} | think_bonus: {think_bonus} | diversity_score: {diversity_score}")
-        print(f"think_format: {think_format} | think_long: {think_long} | resp_format: {resp_format}")
-        print(f"min_unique_words: {min_unique_words} | not_fuzzy_pattern: {not_fuzzy_pattern} | not_constraint_in_resp: {not_constraint_in_resp} | no_hacking: {no_hacking}")
+        print(f"constraint_reward: {constraint_reward}")# | format_reward: {format_reward} | format_multiplier: {format_multiplier} | think_bonus: {think_bonus} | diversity_score: {diversity_score}")
+        print(f"think_format: {think_format} | resp_format: {resp_format}") # think_long: {think_long} |
+        # print(f"min_unique_words: {min_unique_words} | not_fuzzy_pattern: {not_fuzzy_pattern} | not_constraint_in_resp: {not_constraint_in_resp} | no_hacking: {no_hacking}")
         print(f"{ground_truth} | constraint_text: {extra_info['constraints']}")
         print(f"[Solution string]\n{solution_str}")
         print(f"--------------------------------")

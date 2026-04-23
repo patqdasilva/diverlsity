@@ -67,6 +67,11 @@ def run_ppo(config) -> None:
 
     # Create a remote instance of the TaskRunner class, and
     # Execute the `run` method of the TaskRunner instance remotely and wait for it to complete
+    task_runner_options = {}
+    task_runner_num_gpus = float(os.environ.get("VERL_TASK_RUNNER_NUM_GPUS", "0"))
+    if task_runner_num_gpus > 0:
+        task_runner_options["num_gpus"] = task_runner_num_gpus
+
     if (
         is_cuda_available
         and config.global_profiler.tool == "nsys"
@@ -79,9 +84,10 @@ def run_ppo(config) -> None:
         nsight_options = OmegaConf.to_container(
             config.global_profiler.global_tool_config.nsys.controller_nsight_options
         )
-        runner = TaskRunner.options(runtime_env={"nsight": nsight_options}).remote()
+        task_runner_options["runtime_env"] = {"nsight": nsight_options}
+        runner = TaskRunner.options(**task_runner_options).remote()
     else:
-        runner = TaskRunner.remote()
+        runner = TaskRunner.options(**task_runner_options).remote()
     ray.get(runner.run.remote(config))
 
     # [Optional] get the path of the timeline trace file from the configuration, default to None
@@ -91,7 +97,7 @@ def run_ppo(config) -> None:
         ray.timeline(filename=timeline_json_file)
 
 
-@ray.remote(num_cpus=1, num_gpus=1)  # please make sure main_task is not scheduled on head
+@ray.remote(num_cpus=1)
 class TaskRunner:
     """Ray remote class for executing distributed PPO training tasks.
 

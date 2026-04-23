@@ -499,6 +499,14 @@ def extract_verify_logic(verify: str, candidates: List[str]) -> Dict[str, str]:
 _embedding_model = None
 _reward_model, _reward_tokenizer = None, None
 
+
+def _reward_device() -> str:
+    use_gpu = os.environ.get("VERL_CUSTOM_REWARD_USE_GPU", "0").strip().lower()
+    if use_gpu in {"1", "true", "yes", "on"} and torch.cuda.is_available():
+        return "cuda"
+    return "cpu"
+
+
 def get_embedding_model():
     """Lazy load embedding model (Ray-safe singleton pattern)."""
     global _embedding_model, _embedding_tokenizer
@@ -506,7 +514,7 @@ def get_embedding_model():
     if _embedding_model is None:
         model_name = "/emb_model/Qwen3-Embedding-0.6B"
         
-        device = "cuda" if torch.cuda.is_available() else "cpu"
+        device = _reward_device()
         print(f"CUDA_VISIBLE_DEVICES: {os.environ.get('CUDA_VISIBLE_DEVICES', 'not set')}")
         print(f"torch.cuda.is_available(): {torch.cuda.is_available()}")
         print(f"torch.cuda.device_count(): {torch.cuda.device_count() if torch.cuda.is_available() else 0}")
@@ -586,7 +594,7 @@ def get_reward_model():
     if _reward_model is None:
         model_name = "/rm_model/Skywork-Reward-V2-Llama-3.1-8B"
         
-        device = "cuda" if torch.cuda.is_available() else "cpu"
+        device = _reward_device()
         print(f"CUDA_VISIBLE_DEVICES: {os.environ.get('CUDA_VISIBLE_DEVICES', 'not set')}")
         print(f"torch.cuda.is_available(): {torch.cuda.is_available()}")
         print(f"torch.cuda.device_count(): {torch.cuda.device_count() if torch.cuda.is_available() else 0}")
