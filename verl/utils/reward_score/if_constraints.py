@@ -320,7 +320,7 @@ def compute_score_single(solution_str, ground_truth, extra_info, data_source, di
     # Constraint reward
     if extra_info['split'] == 'test':
         diversity_score = 1
-    constraint_reward = check_constraint_following(response, ground_truth, extra_info, no_hacking)
+    constraint_reward = check_constraint_following(response, ground_truth, extra_info, True)
     # Calculate final reward
     # if not no_hacking:
     #     final_reward = -0.5 # discourage hacking
