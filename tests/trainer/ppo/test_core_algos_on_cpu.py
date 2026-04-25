@@ -21,15 +21,20 @@ import torch
 
 import verl.trainer.ppo.core_algos
 from verl.trainer.ppo.core_algos import (
+    TSALLIS_STOCHASTIC_Q2,
+    _build_tsallis_q2_target,
+    _simplex_project_q2,
     compute_gae_advantage_return,
     compute_grpo_outcome_advantage,
     compute_grpo_vectorized_outcome_advantage,
+    compute_policy_loss_tsallis_stochastic_q2,
     compute_rloo_outcome_advantage,
     compute_rloo_vectorized_outcome_advantage,
     get_adv_estimator_fn,
     kl_penalty,
     register_adv_est,
 )
+from verl.workers.config import ActorConfig, FSDPActorConfig, OptimizerConfig, PolicyLossConfig
 
 
 def mock_test_fn():
@@ -359,6 +364,200 @@ def test_kl_penalty_k3_plus_uses_k2_gradient():
     (grad_k2,) = torch.autograd.grad(out_k2, logprob_k2)
 
     assert torch.allclose(grad_plus, grad_k2)
+
+
+def _make_tsallis_fsdp_config(**overrides):
+    policy_overrides = overrides.pop("policy_loss_overrides", {})
+    policy_loss = PolicyLossConfig(loss_mode=TSALLIS_STOCHASTIC_Q2, **policy_overrides)
+    return FSDPActorConfig(
+        strategy="fsdp2",
+        rollout_n=1,
+        ppo_mini_batch_size=2,
+        ppo_micro_batch_size_per_gpu=2,
+        ppo_epochs=1,
+        use_dynamic_bsz=False,
+        use_torch_compile=False,
+        optim=OptimizerConfig(lr=1e-4),
+        policy_loss=policy_loss,
+        **overrides,
+    )
+
+
+def _make_tsallis_loss_inputs():
+    response_logits = torch.tensor(
+        [
+            [[0.2, -0.4, 0.1], [0.1, 0.3, -0.2]],
+            [[-0.5, 0.7, 0.2], [0.4, -0.1, 0.0]],
+        ],
+        dtype=torch.float32,
+        requires_grad=True,
+    )
+    action_ids = torch.tensor([[0, 1], [2, 0]], dtype=torch.long)
+    response_mask = torch.tensor([[1, 1], [1, 0]], dtype=torch.float32)
+    log_prob = torch.log_softmax(response_logits, dim=-1).gather(-1, action_ids.unsqueeze(-1)).squeeze(-1)
+    advantages = torch.tensor([[1.0, -0.75], [0.5, 0.0]], dtype=torch.float32)
+    old_log_prob = log_prob.detach()
+    return old_log_prob, log_prob, advantages, response_mask, response_logits, action_ids
+
+
+def test_simplex_project_q2_returns_valid_simplex_points():
+    values = torch.tensor([[1.5, -0.2, 0.4], [0.2, 0.3, 0.5]], dtype=torch.float32)
+    projected = _simplex_project_q2(values)
+    assert torch.all(projected >= 0)
+    assert torch.allclose(projected.sum(dim=-1), torch.ones(projected.shape[0]), atol=1e-6)
+    assert torch.allclose(projected[1], values[1], atol=1e-6)
+
+
+def test_tsallis_q2_target_moves_mass_with_advantage_sign():
+    logits = torch.zeros(2, 3, dtype=torch.float32)
+    action_ids = torch.tensor([0, 1], dtype=torch.long)
+    advantages = torch.tensor([1.0, -1.0], dtype=torch.float32)
+    targets = _build_tsallis_q2_target(
+        logits_chunk=logits,
+        action_ids_chunk=action_ids,
+        advantages_chunk=advantages,
+        alpha=0.5,
+        prob_floor=1e-8,
+    )
+    base_prob = 1 / 3
+    assert torch.allclose(targets.sum(dim=-1), torch.ones(2), atol=1e-6)
+    assert targets[0, 0] > base_prob
+    assert targets[1, 1] < base_prob
+
+
+def test_tsallis_policy_loss_is_chunk_invariant():
+    old_log_prob, log_prob, advantages, response_mask, response_logits, action_ids = _make_tsallis_loss_inputs()
+    config_small = _make_tsallis_fsdp_config(policy_loss_overrides={"tsallis_chunk_rows": 1})
+    config_large = _make_tsallis_fsdp_config(policy_loss_overrides={"tsallis_chunk_rows": 16})
+    loss_small, metrics_small = compute_policy_loss_tsallis_stochastic_q2(
+        old_log_prob=old_log_prob,
+        log_prob=log_prob,
+        advantages=advantages,
+        response_mask=response_mask,
+        config=config_small,
+        response_logits=response_logits,
+        action_ids=action_ids,
+    )
+    loss_large, metrics_large = compute_policy_loss_tsallis_stochastic_q2(
+        old_log_prob=old_log_prob,
+        log_prob=log_prob,
+        advantages=advantages,
+        response_mask=response_mask,
+        config=config_large,
+        response_logits=response_logits,
+        action_ids=action_ids,
+    )
+    assert torch.allclose(loss_small, loss_large, atol=1e-6)
+    assert metrics_small == metrics_large
+
+
+def test_tsallis_policy_loss_stays_finite_near_probability_floor():
+    response_logits = torch.tensor([[[-40.0, 0.0, 0.0]]], dtype=torch.float32, requires_grad=True)
+    action_ids = torch.tensor([[0]], dtype=torch.long)
+    response_mask = torch.tensor([[1.0]], dtype=torch.float32)
+    advantages = torch.tensor([[1.25]], dtype=torch.float32)
+    log_prob = torch.log_softmax(response_logits, dim=-1).gather(-1, action_ids.unsqueeze(-1)).squeeze(-1)
+    config = _make_tsallis_fsdp_config(policy_loss_overrides={"tsallis_prob_floor": 1e-6})
+    loss, _ = compute_policy_loss_tsallis_stochastic_q2(
+        old_log_prob=log_prob.detach(),
+        log_prob=log_prob,
+        advantages=advantages,
+        response_mask=response_mask,
+        config=config,
+        response_logits=response_logits,
+        action_ids=action_ids,
+    )
+    loss.backward()
+    assert torch.isfinite(loss)
+    assert torch.all(torch.isfinite(response_logits.grad))
+
+
+def test_tsallis_policy_loss_requires_logits_and_action_ids():
+    old_log_prob, log_prob, advantages, response_mask, _, _ = _make_tsallis_loss_inputs()
+    config = _make_tsallis_fsdp_config()
+    with pytest.raises(ValueError, match="requires both response_logits and action_ids"):
+        compute_policy_loss_tsallis_stochastic_q2(
+            old_log_prob=old_log_prob,
+            log_prob=log_prob,
+            advantages=advantages,
+            response_mask=response_mask,
+            config=config,
+        )
+
+
+def test_tsallis_policy_loss_rejects_unsupported_modes():
+    old_log_prob, log_prob, advantages, response_mask, response_logits, action_ids = _make_tsallis_loss_inputs()
+    megatron_config = ActorConfig(
+        strategy="megatron",
+        rollout_n=1,
+        ppo_mini_batch_size=2,
+        ppo_micro_batch_size_per_gpu=2,
+        ppo_epochs=1,
+        use_dynamic_bsz=False,
+        optim=OptimizerConfig(lr=1e-4),
+        policy_loss=PolicyLossConfig(loss_mode=TSALLIS_STOCHASTIC_Q2),
+    )
+    with pytest.raises(ValueError, match="only supported for FSDP actors"):
+        compute_policy_loss_tsallis_stochastic_q2(
+            old_log_prob=old_log_prob,
+            log_prob=log_prob,
+            advantages=advantages,
+            response_mask=response_mask,
+            config=megatron_config,
+            response_logits=response_logits,
+            action_ids=action_ids,
+        )
+
+    fused_config = _make_tsallis_fsdp_config(use_fused_kernels=True)
+    with pytest.raises(ValueError, match="use_fused_kernels=True"):
+        compute_policy_loss_tsallis_stochastic_q2(
+            old_log_prob=old_log_prob,
+            log_prob=log_prob,
+            advantages=advantages,
+            response_mask=response_mask,
+            config=fused_config,
+            response_logits=response_logits,
+            action_ids=action_ids,
+        )
+
+    multi_epoch_config = _make_tsallis_fsdp_config(ppo_epochs=2)
+    with pytest.raises(ValueError, match="requires ppo_epochs=1"):
+        compute_policy_loss_tsallis_stochastic_q2(
+            old_log_prob=old_log_prob,
+            log_prob=log_prob,
+            advantages=advantages,
+            response_mask=response_mask,
+            config=multi_epoch_config,
+            response_logits=response_logits,
+            action_ids=action_ids,
+        )
+
+
+def test_tsallis_policy_loss_rejects_invalid_numeric_options():
+    old_log_prob, log_prob, advantages, response_mask, response_logits, action_ids = _make_tsallis_loss_inputs()
+    chunk_config = _make_tsallis_fsdp_config(policy_loss_overrides={"tsallis_chunk_rows": 0})
+    with pytest.raises(ValueError, match="tsallis_chunk_rows > 0"):
+        compute_policy_loss_tsallis_stochastic_q2(
+            old_log_prob=old_log_prob,
+            log_prob=log_prob,
+            advantages=advantages,
+            response_mask=response_mask,
+            config=chunk_config,
+            response_logits=response_logits,
+            action_ids=action_ids,
+        )
+
+    floor_config = _make_tsallis_fsdp_config(policy_loss_overrides={"tsallis_prob_floor": 0.0})
+    with pytest.raises(ValueError, match="tsallis_prob_floor > 0"):
+        compute_policy_loss_tsallis_stochastic_q2(
+            old_log_prob=old_log_prob,
+            log_prob=log_prob,
+            advantages=advantages,
+            response_mask=response_mask,
+            config=floor_config,
+            response_logits=response_logits,
+            action_ids=action_ids,
+        )
 
 
 if __name__ == "__main__":

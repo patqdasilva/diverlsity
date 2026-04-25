@@ -48,6 +48,7 @@ PolicyLossFn = Callable[
 ]
 
 POLICY_LOSS_REGISTRY: dict[str, PolicyLossFn] = {}
+TSALLIS_STOCHASTIC_Q2 = "tsallis_stochastic_q2"
 
 
 def register_policy_loss(name: str) -> Callable[[PolicyLossFn], PolicyLossFn]:
@@ -83,6 +84,112 @@ def get_policy_loss_fn(name):
             f"Unsupported loss mode: {loss_name}. Supported modes are: {list(POLICY_LOSS_REGISTRY.keys())}"
         )
     return POLICY_LOSS_REGISTRY[loss_name]
+
+
+def _get_config_value(config: Any, key: str, default: Any = None) -> Any:
+    if config is None:
+        return default
+    if isinstance(config, (DictConfig, dict)):
+        return config.get(key, default)
+    return getattr(config, key, default)
+
+
+def _validate_tsallis_stochastic_q2_config(config: DictConfig | ActorConfig | None) -> DictConfig | ActorConfig:
+    if config is None or isinstance(config, AlgoConfig):
+        raise ValueError(f"{TSALLIS_STOCHASTIC_Q2} requires an actor config.")
+
+    strategy = _get_config_value(config, "strategy")
+    if strategy not in {"fsdp", "fsdp2"}:
+        raise ValueError(f"{TSALLIS_STOCHASTIC_Q2} is only supported for FSDP actors. Got strategy={strategy}.")
+
+    if _get_config_value(config, "use_fused_kernels", False):
+        raise ValueError(f"{TSALLIS_STOCHASTIC_Q2} does not support use_fused_kernels=True in v1.")
+
+    ppo_epochs = _get_config_value(config, "ppo_epochs")
+    if ppo_epochs != 1:
+        raise ValueError(f"{TSALLIS_STOCHASTIC_Q2} requires ppo_epochs=1. Got ppo_epochs={ppo_epochs}.")
+
+    policy_loss_cfg = _get_config_value(config, "policy_loss")
+    chunk_rows = _get_config_value(policy_loss_cfg, "tsallis_chunk_rows", 2048)
+    if chunk_rows is None or chunk_rows <= 0:
+        raise ValueError(f"{TSALLIS_STOCHASTIC_Q2} requires tsallis_chunk_rows > 0. Got {chunk_rows}.")
+
+    prob_floor = _get_config_value(policy_loss_cfg, "tsallis_prob_floor", 1e-8)
+    if prob_floor is None or prob_floor <= 0:
+        raise ValueError(f"{TSALLIS_STOCHASTIC_Q2} requires tsallis_prob_floor > 0. Got {prob_floor}.")
+
+    return config
+
+
+def _simplex_project_q2(values: torch.Tensor) -> torch.Tensor:
+    sorted_values, _ = torch.sort(values, dim=-1, descending=True)
+    cssv = torch.cumsum(sorted_values, dim=-1) - 1
+    ranks = torch.arange(1, values.shape[-1] + 1, device=values.device, dtype=values.dtype)
+    support = sorted_values - cssv / ranks > 0
+    rho = support.sum(dim=-1).clamp(min=1)
+    theta = cssv.gather(dim=-1, index=(rho - 1).unsqueeze(-1)) / rho.to(values.dtype).unsqueeze(-1)
+    return torch.clamp(values - theta, min=0.0)
+
+
+def _flatten_tsallis_rows(
+    response_logits: torch.Tensor | None,
+    action_ids: torch.Tensor | None,
+    advantages: torch.Tensor,
+    response_mask: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    if response_logits is None or action_ids is None:
+        raise ValueError(f"{TSALLIS_STOCHASTIC_Q2} requires both response_logits and action_ids.")
+
+    valid_mask = response_mask.to(dtype=torch.bool)
+    num_valid = int(valid_mask.sum().item())
+    if num_valid <= 0:
+        raise ValueError(f"{TSALLIS_STOCHASTIC_Q2} requires at least one valid response token.")
+
+    flat_advantages = advantages[valid_mask]
+    if response_logits.dim() == 3:
+        if action_ids.shape != response_mask.shape:
+            raise ValueError(
+                f"{TSALLIS_STOCHASTIC_Q2} expects dense action_ids to match response_mask shape. "
+                f"Got {tuple(action_ids.shape)} vs {tuple(response_mask.shape)}."
+            )
+        flat_logits = response_logits[valid_mask]
+        flat_action_ids = action_ids[valid_mask]
+    elif response_logits.dim() == 2:
+        if action_ids.dim() != 1:
+            raise ValueError(
+                f"{TSALLIS_STOCHASTIC_Q2} expects flattened action_ids when response_logits are flattened. "
+                f"Got action_ids.ndim={action_ids.dim()}."
+            )
+        if response_logits.shape[0] != num_valid or action_ids.shape[0] != num_valid:
+            raise ValueError(
+                f"{TSALLIS_STOCHASTIC_Q2} flattened inputs must match the number of valid tokens ({num_valid}). "
+                f"Got logits rows={response_logits.shape[0]} and action ids={action_ids.shape[0]}."
+            )
+        flat_logits = response_logits
+        flat_action_ids = action_ids
+    else:
+        raise ValueError(
+            f"{TSALLIS_STOCHASTIC_Q2} expects response_logits with rank 2 or 3. Got rank {response_logits.dim()}."
+        )
+
+    return flat_logits, flat_action_ids, flat_advantages, valid_mask
+
+
+def _build_tsallis_q2_target(
+    logits_chunk: torch.Tensor,
+    action_ids_chunk: torch.Tensor,
+    advantages_chunk: torch.Tensor,
+    alpha: float,
+    prob_floor: float,
+) -> torch.Tensor:
+    with torch.no_grad():
+        old_probs = torch.softmax(logits_chunk.float(), dim=-1)
+        row_idx = torch.arange(old_probs.shape[0], device=old_probs.device)
+        old_action_probs = old_probs[row_idx, action_ids_chunk].clamp_min(prob_floor)
+        delta = alpha * advantages_chunk.float() / old_action_probs
+        perturbed_probs = old_probs.clone()
+        perturbed_probs[row_idx, action_ids_chunk] += delta
+        return _simplex_project_q2(perturbed_probs)
 
 
 class AdvantageEstimator(str, Enum):
@@ -1365,6 +1472,65 @@ def compute_policy_loss_vanilla(
         "actor/pg_clipfrac": pg_clipfrac.detach().item(),
         "actor/ppo_kl": ppo_kl.detach().item(),
         "actor/pg_clipfrac_lower": pg_clipfrac_lower.detach().item(),
+    }
+    return pg_loss, pg_metrics
+
+
+@register_policy_loss(TSALLIS_STOCHASTIC_Q2)  # type: ignore[arg-type]
+def compute_policy_loss_tsallis_stochastic_q2(
+    old_log_prob: torch.Tensor,
+    log_prob: torch.Tensor,
+    advantages: torch.Tensor,
+    response_mask: torch.Tensor,
+    loss_agg_mode: str = "token-mean",
+    config: Optional[DictConfig | ActorConfig] = None,
+    rollout_is_weights: torch.Tensor | None = None,
+    response_logits: torch.Tensor | None = None,
+    action_ids: torch.Tensor | None = None,
+) -> tuple[torch.Tensor, dict[str, Any]]:
+    del old_log_prob, log_prob, rollout_is_weights
+
+    config = _validate_tsallis_stochastic_q2_config(config)
+    flat_logits, flat_action_ids, flat_advantages, valid_mask = _flatten_tsallis_rows(
+        response_logits=response_logits,
+        action_ids=action_ids,
+        advantages=advantages,
+        response_mask=response_mask,
+    )
+
+    policy_loss_cfg = _get_config_value(config, "policy_loss")
+    tsallis_alpha = _get_config_value(policy_loss_cfg, "tsallis_alpha", 1.0)
+    tsallis_chunk_rows = _get_config_value(policy_loss_cfg, "tsallis_chunk_rows", 2048)
+    tsallis_prob_floor = _get_config_value(policy_loss_cfg, "tsallis_prob_floor", 1e-8)
+
+    token_loss_chunks = []
+    for chunk_start in range(0, flat_logits.shape[0], tsallis_chunk_rows):
+        chunk_end = min(chunk_start + tsallis_chunk_rows, flat_logits.shape[0])
+        logits_chunk = flat_logits[chunk_start:chunk_end]
+        action_ids_chunk = flat_action_ids[chunk_start:chunk_end]
+        advantages_chunk = flat_advantages[chunk_start:chunk_end]
+        tsallis_target = _build_tsallis_q2_target(
+            logits_chunk=logits_chunk,
+            action_ids_chunk=action_ids_chunk,
+            advantages_chunk=advantages_chunk,
+            alpha=tsallis_alpha,
+            prob_floor=tsallis_prob_floor,
+        )
+        log_softmax_chunk = torch.log_softmax(logits_chunk.float(), dim=-1)
+        token_loss_chunks.append(-(tsallis_target * log_softmax_chunk).sum(dim=-1))
+
+    flat_token_losses = torch.cat(token_loss_chunks, dim=0)
+    loss_mat = torch.zeros_like(advantages, dtype=flat_token_losses.dtype)
+    loss_mat = loss_mat.masked_scatter(valid_mask, flat_token_losses)
+    global_batch_info = _get_config_value(config, "global_batch_info", {}) or {}
+    pg_loss = agg_loss(
+        loss_mat=loss_mat, loss_mask=response_mask, loss_agg_mode=loss_agg_mode, **global_batch_info
+    )
+
+    pg_metrics = {
+        "actor/pg_clipfrac": 0.0,
+        "actor/ppo_kl": 0.0,
+        "actor/pg_clipfrac_lower": 0.0,
     }
     return pg_loss, pg_metrics
 

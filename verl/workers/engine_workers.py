@@ -30,6 +30,7 @@ from verl.checkpoint_engine import CheckpointEngineRegistry
 from verl.single_controller.base import Worker
 from verl.single_controller.base.decorator import Dispatch, make_nd_compute_dataproto_dispatch_fn, register
 from verl.trainer.distillation import distillation_ppo_loss, is_distillation_enabled
+from verl.trainer.ppo.core_algos import TSALLIS_STOCHASTIC_Q2
 from verl.utils import tensordict_utils as tu
 from verl.utils.config import omega_conf_to_dataclass
 from verl.utils.device import get_device_name, is_npu_available, set_expandable_segments
@@ -152,6 +153,15 @@ class TrainingWorker(Worker, DistProfilerExtension):
 
         self.loss_fn = None
 
+    def _should_return_response_logits(self) -> bool:
+        if self.loss_fn is None or not isinstance(self.loss_fn, functools.partial):
+            return False
+        loss_config = self.loss_fn.keywords.get("config") if self.loss_fn.keywords is not None else None
+        policy_loss_config = getattr(loss_config, "policy_loss", None)
+        if policy_loss_config is None:
+            return False
+        return policy_loss_config.get("loss_mode", "vanilla") == TSALLIS_STOCHASTIC_Q2
+
     @register(dispatch_mode=Dispatch.ONE_TO_ALL)
     def to(self, device, model=True, optimizer=True, grad=True):
         """Manual control of load/offload"""
@@ -262,6 +272,16 @@ class TrainingWorker(Worker, DistProfilerExtension):
             )
             mini_batch_size_per_gpu = mini_batch_size // self.engine.get_data_parallel_size()
 
+        return_response_logits = self._should_return_response_logits()
+        total_num_iterations = data.shape[0] // mini_batch_size_per_gpu * epochs
+        if return_response_logits and total_num_iterations != 1:
+            raise ValueError(
+                f"{TSALLIS_STOCHASTIC_Q2} requires exactly one PPO mini-batch / optimizer step per rollout batch. "
+                f"Got {total_num_iterations} steps from local_batch_size={data.shape[0]}, "
+                f"mini_batch_size_per_gpu={mini_batch_size_per_gpu}, and epochs={epochs}."
+            )
+        tu.assign_non_tensor(data, return_response_logits=return_response_logits)
+
         # make iterator
         dataloader = tu.make_iterator(
             data,
@@ -277,7 +297,6 @@ class TrainingWorker(Worker, DistProfilerExtension):
         ):
             # update
             output_lst = []
-            total_num_iterations = data.shape[0] // mini_batch_size_per_gpu * epochs
 
             for batch_idx, mini_batch_td in enumerate(dataloader):
                 # add global token num
@@ -339,6 +358,7 @@ class TrainingWorker(Worker, DistProfilerExtension):
             max_token_len_per_gpu=self.engine_config.max_token_len_per_gpu,
             micro_batch_size_per_gpu=self.engine_config.micro_batch_size_per_gpu,
             use_fused_kernels=self.engine_config.use_fused_kernels,
+            return_response_logits=self._should_return_response_logits(),
         )
 
         for key, val in default_keys.items():
